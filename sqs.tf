@@ -7,7 +7,7 @@ resource "aws_sqs_queue" "notifications_dlq" {
 # Main notification queue
 resource "aws_sqs_queue" "notifications" {
   name                       = "${var.project_name}-queue"
-  visibility_timeout_seconds = var.lambda_timeout * 6
+  visibility_timeout_seconds = var.lambda_timeout * 10
   message_retention_seconds  = 86400 # 1 day
 
   redrive_policy = jsonencode({
