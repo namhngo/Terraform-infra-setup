@@ -1,7 +1,8 @@
-# SIO Notifications — Terraform Infrastructure
+# Notification System — Terraform Infrastructure
 
-Terraform configuration for the [SIO Vigilance](https://github.com/satelytics/sio-vigilance) asynchronous notification system.  
-Design doc: [`sio-vigilance/plans/notifications/notification-system-design.md`](https://github.com/satelytics/sio-vigilance/blob/doc/notification-system/plans/notifications/notification-system-design.md)
+Terraform configuration for an asynchronous notification system built on SQS + Lambda + SES.
+
+> Design reference: [notification system design doc](https://github.com/satelytics/sio-vigilance/blob/doc/notification-system/plans/notifications/notification-system-design.md) (six-layer architecture adapted for this project)
 
 ---
 
@@ -11,39 +12,37 @@ Design doc: [`sio-vigilance/plans/notifications/notification-system-design.md`](
                            ┌─────────────────────────────────────────────────────────────────────────┐
                            │                              AWS                                         │
                            │                                                                         │
-  ┌──────────┐   publish   │   ┌──────────┐   trigger   ┌────────────┐   send email   ┌───────────┐  │
-  │          │─────────────┼──▶│          │────────────▶│            │───────────────▶│           │  │
-  │  sio-api │   event     │   │   SQS    │             │   Lambda   │               │    SES    │  │
-  │          │             │   │  Queue   │             │ (Python)   │               │           │  │
-  └──────────┘             │   │          │             │            │               └───────────┘  │
-                           │   └────┬─────┘             └─────┬──────┘                              │
-                           │        │                         │                                     │
-                           │   ┌────▼─────┐                   │                                     │
-                           │   │   DLQ    │                   │                                     │
-                           │   │ (failed) │                   │                                     │
-                           │   └──────────┘                   │                                     │
-                           │                                  │                                     │
-                           │                          ┌───────▼───────┐                             │
-                           │                          │  CloudWatch   │                             │
-                           │                          │    Logs       │                             │
-                           │                          └───────────────┘                             │
-                           └─────────────────────────────────────────────────────────────────────────┘
+  ┌───────────────┐ publish│   ┌──────────┐   trigger   ┌────────────┐   send email   ┌───────────┐  │
+  │               │────────┼──▶│          │────────────▶│            │───────────────▶│           │  │
+  │ Backend Server│  event  │   │   SQS    │             │   Lambda   │               │    SES    │  │
+  │               │         │   │  Queue   │             │  (Python)  │               │           │  │
+  └───────────────┘         │   │          │             │            │               └───────────┘  │
+                            │   └────┬─────┘             └─────┬──────┘                              │
+                            │        │                         │                                     │
+                            │   ┌────▼─────┐                   │                                     │
+                            │   │   DLQ    │                   │                                     │
+                            │   │ (failed) │                   │                                     │
+                            │   └──────────┘                   │                                     │
+                            │                                  │                                     │
+                            │                          ┌───────▼───────┐                             │
+                            │                          │  CloudWatch   │                             │
+                            │                          │    Logs       │                             │
+                            │                          └───────────────┘                             │
+                            └─────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Flow:**
-1. `sio-api` publishes a lightweight notification event to SQS and returns immediately
+1. Backend server publishes a lightweight notification event to SQS and returns immediately
 2. SQS triggers the Lambda function
-3. Lambda processes the event: resolves recipients, builds payloads, sends email via SES
-4. Failed messages (after retries) go to the Dead Letter Queue (DLQ)
+3. Lambda picks up the event and sends email via SES *(in a full setup, it would also query a database for subscriber preferences and log delivery results — this basic version sends directly)*
+4. Failed messages (after max retries by SQS) go to the Dead Letter Queue (DLQ)
 5. All execution logs stream to CloudWatch
 
 ### Six-Layer Design
 
-The full system design (see [design doc](https://github.com/satelytics/sio-vigilance/blob/doc/notification-system/plans/notifications/notification-system-design.md)) defines six layers:
-
 | Layer | Purpose | Terraform |
 |---|---|---|
-| 1. Event Producers | sio-api publishes events to SQS | — (app code) |
+| 1. Event Producers | Backend publishes events to SQS | — (app code) |
 | 2. Event Capture | SQS receives and buffers events | `sqs.tf` |
 | 3. Async Processing | Lambda processes events | `lambda.tf` |
 | 4. Delivery | SES sends emails | `ses.tf` |
@@ -143,37 +142,27 @@ Paste the queue URL from `terraform output sqs_queue_url` when prompted.
 - [x] Lambda handler: parses SQS events, sends email via SES
 - [x] Test script to publish events to SQS
 - [ ] Terraform remote state backend (S3 + DynamoDB lock)
-- [ ] `NOTIFICATION_USE_QUEUE = True` in sio-api settings
-- [ ] `NotificationEvent` model in sio-api
-- [ ] `NotificationLog` model in sio-api
-- [ ] Refactor `sendNotification` to write event + publish to SQS
-- [ ] Lambda VPC attachment (for RDS database access)
-- [ ] NAT Gateway (Lambda internet access from VPC)
-- [ ] Secrets Manager (DB credentials for Lambda)
-- [ ] Port subscriber lookup + filtering logic from sio-api to Lambda
-- [ ] Port delivery logic (Email/SMS/In-app) from sio-api to Lambda
+- [ ] Backend server: publish events to SQS queue
+- [ ] CloudWatch alarms (DLQ depth, Lambda errors, processing lag)
 
 ### Phase 2 — Retry + Fallback + Tracking
 
 - [ ] Per-channel retry with exponential backoff in Lambda
 - [ ] Channel fallback: EMAIL → SMS → IN_APP
-- [ ] `NotificationLog` entries for every delivery attempt
+- [ ] Delivery tracking (log every attempt with status + timestamps)
 - [ ] Idempotency key deduplication
-- [ ] CloudWatch alarm: DLQ depth > 0
-- [ ] CloudWatch alarm: Lambda error rate > 5%
-- [ ] CloudWatch alarm: processing lag > 15min
 
 ### Phase 3 — Aggregation + Batching
 
-- [ ] Digest/batching for `OBS.STATUS_CHANGE` (CloudWatch scheduled trigger)
+- [ ] Digest/batching for status-change events (CloudWatch scheduled trigger)
 - [ ] In-app notification as guaranteed last resort
 
 ### Phase 4 — User Preferences + New Types
 
-- [ ] `NotificationPreference` model + API
-- [ ] Notification preferences UI in Vigilance
+- [ ] Notification preferences model + API
+- [ ] Notification preferences UI
 - [ ] Targeted routing: @mention, alert assignment
-- [ ] Role-based routing: professional services
+- [ ] Role-based routing
 
 ---
 
@@ -182,7 +171,7 @@ Paste the queue URL from `terraform output sqs_queue_url` when prompted.
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `aws_region` | string | `us-east-1` | AWS region |
-| `project_name` | string | `sio-notifications` | Resource name prefix |
+| `project_name` | string | `notifications` | Resource name prefix |
 | `sender_email` | string | *required* | SES verified sender address |
 | `test_recipient_email` | string | *required* | SES verified recipient (sandbox) |
 | `lambda_timeout` | number | `60` | Lambda timeout (seconds) |
@@ -198,10 +187,3 @@ Paste the queue URL from `terraform output sqs_queue_url` when prompted.
 | `lambda_function_name` | Lambda function name |
 | `lambda_function_arn` | Lambda function ARN |
 | `sender_email` | Verified SES sender email |
-
----
-
-## Related Repos
-
-- **sio-api** — API producer (publishes events to SQS)
-- **sio-vigilance** — Frontend (notification preferences UI — future)
