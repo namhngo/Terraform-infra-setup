@@ -38,6 +38,31 @@ resource "aws_cloudwatch_metric_alarm" "dlq_depth" {
 }
 
 # =============================================================
+# Alarm — Processing lag
+# Fires when messages sit in the queue too long,
+# meaning Lambda isn't keeping up or is stuck.
+# =============================================================
+
+resource "aws_cloudwatch_metric_alarm" "processing_lag" {
+  alarm_name        = "${var.project_name}-processing-lag"
+  alarm_description = "Notifications are sitting in the queue too long — Lambda may not be keeping up"
+  namespace         = "AWS/SQS"
+  metric_name       = "ApproximateAgeOfOldestMessage"
+  dimensions = {
+    QueueName = aws_sqs_queue.notifications.name
+  }
+  statistic           = "Maximum"
+  period              = 300 # 5 minutes
+  evaluation_periods  = 1
+  threshold           = 900 # 15 minutes
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alarms.arn]
+  ok_actions    = [aws_sns_topic.alarms.arn]
+}
+
+# =============================================================
 # Alarm — Lambda error rate
 # Fires when the notification processor throws errors,
 # meaning events are not being handled correctly.
