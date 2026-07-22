@@ -36,3 +36,28 @@ resource "aws_cloudwatch_metric_alarm" "dlq_depth" {
   alarm_actions = [aws_sns_topic.alarms.arn]
   ok_actions    = [aws_sns_topic.alarms.arn]
 }
+
+# =============================================================
+# Alarm — Lambda error rate
+# Fires when the notification processor throws errors,
+# meaning events are not being handled correctly.
+# =============================================================
+
+resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
+  alarm_name        = "${var.project_name}-lambda-errors"
+  alarm_description = "Lambda function is throwing errors while processing notifications"
+  namespace         = "AWS/Lambda"
+  metric_name       = "Errors"
+  dimensions = {
+    FunctionName = aws_lambda_function.notification_processor.function_name
+  }
+  statistic           = "Sum"
+  period              = 300 # 5 minutes
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+
+  alarm_actions = [aws_sns_topic.alarms.arn]
+  ok_actions    = [aws_sns_topic.alarms.arn]
+}
