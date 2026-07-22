@@ -22,3 +22,8 @@ output "sender_email" {
   description = "Verified sender email for SES"
   value       = var.sender_email
 }
+
+output "alarms_topic_arn" {
+  description = "ARN of the SNS topic used for CloudWatch alarm notifications"
+  value       = aws_sns_topic.alarms.arn
+}
