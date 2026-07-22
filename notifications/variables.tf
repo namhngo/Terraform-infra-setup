@@ -7,7 +7,7 @@ variable "aws_region" {
 variable "project_name" {
   description = "Prefix for all resource names"
   type        = string
-  default     = "sio-notifications"
+  default     = "notifications"
 }
 
 variable "sender_email" {

@@ -52,11 +52,11 @@ def process_notification(msg):
 def build_subject(event_type, contents):
     if event_type == "OBS.STATUS_CHANGE":
         count = len(contents.get("records", []))
-        return f"[Vigilance] {count} observation(s) updated"
+        return f"[Notify] {count} observation(s) updated"
     elif event_type == "OBS.NEW_ALERTS":
         count = len(contents.get("records", []))
-        return f"[Vigilance] {count} new alert(s) detected"
-    return f"[Vigilance] Notification — {event_type}"
+        return f"[Notify] {count} new alert(s) detected"
+    return f"[Notify] Notification — {event_type}"
 
 
 def build_body(event_type, originator, contents):
@@ -100,7 +100,7 @@ def build_html_body(event_type, originator, contents):
             </tr>
             {rows}
         </table>
-        <p style="margin-top:16px;color:#888;font-size:12px;">This is an automated notification from Vigilance.</p>
+        <p style="margin-top:16px;color:#888;font-size:12px;">This is an automated notification from this system.</p>
     </body>
     </html>
     """
