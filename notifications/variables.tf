@@ -37,3 +37,8 @@ variable "sqs_max_receive_count" {
   type        = number
   default     = 3
 }
+
+variable "alarm_email" {
+  description = "Email address to receive CloudWatch alarm notifications"
+  type        = string
+}
