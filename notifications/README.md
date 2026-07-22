@@ -2,8 +2,6 @@
 
 Terraform configuration for an asynchronous notification system built on SQS + Lambda + SES.
 
-> Design reference: [notification system design doc](https://github.com/satelytics/sio-vigilance/blob/doc/notification-system/plans/notifications/notification-system-design.md) (six-layer architecture adapted for this project)
-
 ---
 
 ## Architecture
@@ -141,7 +139,6 @@ Paste the queue URL from `terraform output sqs_queue_url` when prompted.
 - [x] SES email identities (sender + test recipient)
 - [x] Lambda handler: parses SQS events, sends email via SES
 - [x] Test script to publish events to SQS
-- [ ] Terraform remote state backend (S3 + DynamoDB lock)
 - [ ] Backend server: publish events to SQS queue
 - [ ] CloudWatch alarms (DLQ depth, Lambda errors, processing lag)
 
