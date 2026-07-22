@@ -184,3 +184,9 @@ Paste the queue URL from `terraform output sqs_queue_url` when prompted.
 | `lambda_function_name` | Lambda function name |
 | `lambda_function_arn` | Lambda function ARN |
 | `sender_email` | Verified SES sender email |
+
+---
+
+## Future Improvements
+
+- **Remote state (S3 backend)** — move `terraform.tfstate` to an S3 bucket so it's not stored only on your laptop. No DynamoDB needed for a solo project (locking is only relevant when multiple people run terraform on the same infra).
