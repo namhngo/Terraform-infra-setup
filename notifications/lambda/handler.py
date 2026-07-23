@@ -98,10 +98,9 @@ def log_delivery_attempt(event_id, recipient, channel, status, attempt_number, e
 
 
 def buffer_notification(msg):
-    """Parse the SQS message and stash it in the batch buffer instead of
-    sending right away. The scheduled digest flush (see flush_digest)
-    picks it up and sends it grouped with any other events for the
-    same recipient.
+    """Parse the SQS message and either send it right away (if flagged
+    `sendImmediately`) or stash it in the batch buffer for the next
+    scheduled digest flush (see flush_digest).
     """
     event_id = msg.get("eventId")
     recipient = msg.get("recipientEmail")
@@ -113,7 +112,11 @@ def buffer_notification(msg):
     idempotency_key = build_idempotency_key(msg)
 
     if already_sent(idempotency_key):
-        logger.info(f"Skipping duplicate buffering for key {idempotency_key}")
+        logger.info(f"Skipping duplicate delivery for key {idempotency_key}")
+        return
+
+    if msg.get("sendImmediately"):
+        send_notification_now(msg, idempotency_key)
         return
 
     if not buffer_table:
@@ -138,6 +141,31 @@ def buffer_notification(msg):
     # buffer it a second time.
     mark_sent(idempotency_key)
     logger.info(f"Buffered notification for {recipient} (event {event_id})")
+
+
+def send_notification_now(msg, idempotency_key):
+    """Bypass the batch buffer entirely and deliver right away. Set
+    `"sendImmediately": true` on the event to use this path — handy for
+    testing, and for future time-sensitive event types (e.g. @mentions)
+    that shouldn't wait for the next digest flush.
+    """
+    event_id = msg.get("eventId")
+    recipient = msg.get("recipientEmail")
+    event_type = msg.get("eventType", "UNKNOWN")
+    originator = msg.get("originatorName", "System")
+    contents = msg.get("contents", {})
+
+    subject = build_subject(event_type, contents)
+    body_text = build_body(event_type, originator, contents)
+    body_html = build_html_body(event_type, originator, contents)
+
+    delivered = send_with_retry(event_id, recipient, subject, body_text, body_html)
+
+    if not delivered:
+        send_in_app_fallback(event_id, recipient, subject, body_text)
+
+    mark_sent(idempotency_key)
+    logger.info(f"Sent immediately to {recipient} (event {event_id})")
 
 
 def send_with_retry(event_id, recipient, subject, body_text, body_html):
