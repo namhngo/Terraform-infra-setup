@@ -33,9 +33,11 @@ Terraform configuration for an asynchronous notification system built on SQS + L
 1. Backend server publishes a lightweight notification event to SQS and returns immediately
 2. SQS triggers the Lambda function
 3. Lambda checks a DynamoDB table to skip messages it has already processed (idempotency), then sends email via SES with a few retries on failure *(in a full setup, it would also query a database for subscriber preferences — this basic version sends directly)*
-4. If all retries fail, SQS redelivers the message; after exhausting `sqs_max_receive_count` it lands in the Dead Letter Queue (DLQ)
-5. CloudWatch alarms watch the DLQ, Lambda error rate, and queue processing lag — and notify via SNS/email
-6. All execution logs stream to CloudWatch
+4. If email fails after all retries, Lambda falls back to an "in-app" channel — since this project has no real frontend, that just means logging a structured notification instead of losing it
+5. Every delivery attempt (success, failure, or fallback) is recorded in a DynamoDB log table
+6. If the Lambda itself crashes (not a normal email failure), SQS redelivers the message; after exhausting `sqs_max_receive_count` it lands in the Dead Letter Queue (DLQ)
+7. CloudWatch alarms watch the DLQ, Lambda error rate, and queue processing lag — and notify via SNS/email
+8. All execution logs stream to CloudWatch
 
 ### Six-Layer Design
 
@@ -45,8 +47,8 @@ Terraform configuration for an asynchronous notification system built on SQS + L
 | 2. Event Capture | SQS receives and buffers events | `sqs.tf` |
 | 3. Async Processing | Lambda processes events | `lambda.tf` |
 | 4. Delivery | SES sends emails | `ses.tf` |
-| 5. Failure Handling | DLQ + retries + idempotency + alarms | `sqs.tf`, `lambda.tf`, `dynamodb.tf`, `cloudwatch.tf` |
-| 6. Tracking & Audit | CloudWatch logs + alarms | `cloudwatch.tf` |
+| 5. Failure Handling | DLQ + retries + idempotency + fallback + alarms | `sqs.tf`, `lambda.tf`, `dynamodb.tf`, `cloudwatch.tf` |
+| 6. Tracking & Audit | Delivery log (DynamoDB) + CloudWatch logs/alarms | `dynamodb.tf`, `cloudwatch.tf` |
 
 ---
 
@@ -60,7 +62,7 @@ notifications/
 ├── sqs.tf                # SQS main queue + Dead Letter Queue
 ├── lambda.tf             # IAM role, Lambda function, SQS trigger
 ├── ses.tf                # SES email identities (sender + recipient)
-├── dynamodb.tf           # Idempotency tracking table
+├── dynamodb.tf           # Idempotency + delivery log tables
 ├── cloudwatch.tf         # SNS alarm topic + CloudWatch alarms
 ├── lambda/
 │   └── handler.py        # Lambda function code (Python 3.11)
@@ -132,6 +134,7 @@ Paste the queue URL from `terraform output sqs_queue_url` when prompted.
 | SES Identity (sender) | `var.sender_email` | Requires verification click |
 | SES Identity (recipient) | `var.test_recipient_email` | Required in SES sandbox |
 | DynamoDB Table | `<project>-idempotency` | Pay-per-request, TTL enabled (1 day) |
+| DynamoDB Table | `<project>-notification-log` | Pay-per-request, TTL enabled (30 days) — one row per delivery attempt |
 | SNS Topic | `<project>-alarms` | Email subscription for alarm notifications |
 | CloudWatch Alarm | `<project>-dlq-depth` | Fires when a message lands in the DLQ |
 | CloudWatch Alarm | `<project>-lambda-errors` | Fires on any Lambda error in a 5-min window |
@@ -157,13 +160,12 @@ Paste the queue URL from `terraform output sqs_queue_url` when prompted.
 
 - [x] Retry with backoff on email delivery in Lambda
 - [x] Idempotency key deduplication (DynamoDB)
-- [ ] Channel fallback: EMAIL → SMS → IN_APP
-- [ ] Delivery tracking (log every attempt with status + timestamps)
+- [x] Channel fallback: EMAIL → IN_APP *(logged, since this project has no real UI to display in-app notifications)*
+- [x] Delivery tracking (every attempt logged to DynamoDB with status + timestamp)
 
 ### Phase 3 — Aggregation + Batching
 
 - [ ] Digest/batching for status-change events (CloudWatch scheduled trigger)
-- [ ] In-app notification as guaranteed last resort
 
 ### Phase 4 — User Preferences + New Types
 
@@ -197,9 +199,13 @@ Paste the queue URL from `terraform output sqs_queue_url` when prompted.
 | `lambda_function_arn` | Lambda function ARN |
 | `sender_email` | Verified SES sender email |
 | `alarms_topic_arn` | ARN of the SNS topic used for alarm notifications |
+| `notification_log_table_name` | Name of the DynamoDB table tracking delivery attempts |
 
 ---
 
 ## Future Improvements
 
 - **Remote state (S3 backend)** — move `terraform.tfstate` to an S3 bucket so it's not stored only on your laptop. No DynamoDB needed for a solo project (locking is only relevant when multiple people run terraform on the same infra).
+- **SMS channel** — skipped for now since it requires SNS phone number verification/cost. Current fallback chain is EMAIL → IN_APP only.
+- **Real in-app UI** — currently "in-app" just means a structured log line. A future frontend could poll `notification_log` (or a dedicated table) to actually display these.
+- **Batching/digest** — group rapid status-change events into a single email instead of one per event, using a scheduled (cron) Lambda trigger.
