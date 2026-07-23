@@ -15,21 +15,29 @@ dynamodb = boto3.resource("dynamodb")
 SENDER_EMAIL = os.environ["SENDER_EMAIL"]
 IDEMPOTENCY_TABLE = os.environ.get("IDEMPOTENCY_TABLE")
 NOTIFICATION_LOG_TABLE = os.environ.get("NOTIFICATION_LOG_TABLE")
+BATCH_BUFFER_TABLE = os.environ.get("BATCH_BUFFER_TABLE")
 IDEMPOTENCY_TTL_SECONDS = 86400  # 1 day
 LOG_TTL_SECONDS = 2592000  # 30 days
+BUFFER_TTL_SECONDS = 3600  # safety net in case a flush is ever missed
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = [1, 3, 7]  # delay before each retry attempt
 
 idempotency_table = dynamodb.Table(IDEMPOTENCY_TABLE) if IDEMPOTENCY_TABLE else None
 log_table = dynamodb.Table(NOTIFICATION_LOG_TABLE) if NOTIFICATION_LOG_TABLE else None
+buffer_table = dynamodb.Table(BATCH_BUFFER_TABLE) if BATCH_BUFFER_TABLE else None
 
 
 def lambda_handler(event, context):
-    """Entry point — AWS invokes this when SQS delivers a message."""
-    for record in event["Records"]:
+    """Entry point — invoked either by SQS (new events to buffer) or by the
+    CloudWatch schedule in digest.tf (time to flush the buffer as emails)."""
+    if event.get("source") == "digest.schedule":
+        flush_digest()
+        return
+
+    for record in event.get("Records", []):
         body = json.loads(record["body"])
         logger.info(f"Received event: {json.dumps(body, indent=2)}")
-        process_notification(body)
+        buffer_notification(body)
 
 
 def build_idempotency_key(msg):
@@ -89,13 +97,14 @@ def log_delivery_attempt(event_id, recipient, channel, status, attempt_number, e
         logger.error(f"Failed to write notification log (non-fatal): {e}")
 
 
-def process_notification(msg):
-    """Parse the SQS message and deliver it, with idempotency, retry, tracking, and fallback."""
+def buffer_notification(msg):
+    """Parse the SQS message and stash it in the batch buffer instead of
+    sending right away. The scheduled digest flush (see flush_digest)
+    picks it up and sends it grouped with any other events for the
+    same recipient.
+    """
     event_id = msg.get("eventId")
-    event_type = msg.get("eventType", "UNKNOWN")
-    originator = msg.get("originatorName", "System")
     recipient = msg.get("recipientEmail")
-    contents = msg.get("contents", {})
 
     if not recipient:
         logger.error("No recipientEmail in message — skipping")
@@ -104,22 +113,31 @@ def process_notification(msg):
     idempotency_key = build_idempotency_key(msg)
 
     if already_sent(idempotency_key):
-        logger.info(f"Skipping duplicate delivery for key {idempotency_key}")
+        logger.info(f"Skipping duplicate buffering for key {idempotency_key}")
         return
 
-    subject = build_subject(event_type, contents)
-    body_text = build_body(event_type, originator, contents)
-    body_html = build_html_body(event_type, originator, contents)
+    if not buffer_table:
+        logger.error("BATCH_BUFFER_TABLE not configured — cannot buffer event")
+        return
 
-    delivered = send_with_retry(event_id, recipient, subject, body_text, body_html)
+    buffer_table.put_item(
+        Item={
+            "buffer_id": str(uuid.uuid4()),
+            "recipient": recipient,
+            "event_id": event_id or "unknown",
+            "event_type": msg.get("eventType", "UNKNOWN"),
+            "originator_name": msg.get("originatorName", "System"),
+            "contents": json.dumps(msg.get("contents", {})),
+            "created_at": int(time.time()),
+            "expires_at": int(time.time()) + BUFFER_TTL_SECONDS,
+        }
+    )
 
-    if not delivered:
-        # Email failed after all retries — fall back to an in-app-style notification.
-        # This project has no real frontend, so "in-app" means logging a structured
-        # message that a UI could later poll/display instead of losing the notification.
-        send_in_app_fallback(event_id, recipient, subject, body_text)
-
+    # Mark as processed now — once it's in the buffer it's guaranteed to be
+    # picked up by the next flush, so a redelivered SQS message shouldn't
+    # buffer it a second time.
     mark_sent(idempotency_key)
+    logger.info(f"Buffered notification for {recipient} (event {event_id})")
 
 
 def send_with_retry(event_id, recipient, subject, body_text, body_html):
