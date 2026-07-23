@@ -33,7 +33,7 @@ Terraform configuration for an asynchronous notification system built on SQS + L
 **Flow:**
 1. Backend server publishes a lightweight notification event to SQS and returns immediately
 2. SQS triggers the Lambda function
-3. Lambda checks a DynamoDB table to skip events it has already processed (idempotency), then writes the event into a batch buffer table instead of sending immediately *(in a full setup, it would also query a database for subscriber preferences — this basic version just buffers directly)*
+3. Lambda checks a DynamoDB table to skip events it has already processed (idempotency), then either sends it right away (if flagged `sendImmediately`) or writes it into a batch buffer table *(in a full setup, it would also query a database for subscriber preferences — this basic version just buffers or sends directly)*
 4. Every `batch_window_minutes` (default 5), a CloudWatch scheduled trigger invokes the same Lambda in "flush" mode
 5. The flush reads everything in the buffer, groups it by recipient, and sends **one digest email per recipient** via SES (with retries on failure)
 6. If email fails after all retries, Lambda falls back to an "in-app" channel — since this project has no real frontend, that just means logging a structured notification instead of losing it
@@ -126,10 +126,11 @@ python scripts/send_test_event.py
 
 Paste the queue URL from `terraform output sqs_queue_url` when prompted.
 
-The event is buffered immediately, but the actual email isn't sent until the
-next scheduled flush (every `batch_window_minutes`, default 5). Check
-CloudWatch Logs for the Lambda function to watch both the buffering and the
-flush happen.
+By default the event is buffered and the email isn't sent until the next
+scheduled flush (every `batch_window_minutes`, default 5). Answer "y" to the
+`sendImmediately` prompt in the script to skip the buffer and get an email
+right away — useful for quick testing, or for event types that shouldn't
+wait for a digest. Check CloudWatch Logs for the Lambda function either way.
 
 ---
 
@@ -180,6 +181,7 @@ flush happen.
 - [x] Batch buffer table — events are stored, not sent, on arrival
 - [x] Scheduled CloudWatch trigger flushes the buffer every `batch_window_minutes`
 - [x] Digest grouping — multiple events per recipient become a single email
+- [x] `sendImmediately` flag to bypass the buffer per-event (manual opt-out, not automatic by type yet)
 
 ### Phase 4 — User Preferences + New Types
 
@@ -223,4 +225,4 @@ flush happen.
 - **Remote state (S3 backend)** — move `terraform.tfstate` to an S3 bucket so it's not stored only on your laptop. No DynamoDB needed for a solo project (locking is only relevant when multiple people run terraform on the same infra).
 - **SMS channel** — skipped for now since it requires SNS phone number verification/cost. Current fallback chain is EMAIL → IN_APP only.
 - **Real in-app UI** — currently "in-app" just means a structured log line. A future frontend could poll `notification_log` (or a dedicated table) to actually display these.
-- **Per-type routing** — right now every event is batched and waits for the next flush. A more complete system would send time-sensitive events (like @mentions) immediately and only batch high-volume types (like status changes).
+- **Per-type routing** — the `sendImmediately` flag lets any event opt out of batching, but nothing sets it automatically yet. A more complete system would set it based on `eventType` (e.g. always true for @mentions, always false for status changes) instead of relying on the producer to decide.
