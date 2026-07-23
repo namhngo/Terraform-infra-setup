@@ -58,7 +58,7 @@ resource "aws_iam_role_policy" "lambda_ses" {
   })
 }
 
-# Permission 4: Lambda can read/write the idempotency table
+# Permission 4: Lambda can read/write the idempotency + notification log tables
 resource "aws_iam_role_policy" "lambda_dynamodb" {
   name = "${var.project_name}-lambda-dynamodb"
   role = aws_iam_role.lambda_role.name
@@ -71,7 +71,10 @@ resource "aws_iam_role_policy" "lambda_dynamodb" {
         "dynamodb:GetItem",
         "dynamodb:PutItem"
       ]
-      Resource = aws_dynamodb_table.idempotency.arn
+      Resource = [
+        aws_dynamodb_table.idempotency.arn,
+        aws_dynamodb_table.notification_log.arn
+      ]
     }]
   })
 }
@@ -99,9 +102,10 @@ resource "aws_lambda_function" "notification_processor" {
 
   environment {
     variables = {
-      SENDER_EMAIL      = var.sender_email
-      AWS_SES_REGION    = var.aws_region
-      IDEMPOTENCY_TABLE = aws_dynamodb_table.idempotency.name
+      SENDER_EMAIL           = var.sender_email
+      AWS_SES_REGION         = var.aws_region
+      IDEMPOTENCY_TABLE      = aws_dynamodb_table.idempotency.name
+      NOTIFICATION_LOG_TABLE = aws_dynamodb_table.notification_log.name
     }
   }
 }
