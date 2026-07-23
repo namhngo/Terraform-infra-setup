@@ -27,3 +27,8 @@ output "alarms_topic_arn" {
   description = "ARN of the SNS topic used for CloudWatch alarm notifications"
   value       = aws_sns_topic.alarms.arn
 }
+
+output "notification_log_table_name" {
+  description = "Name of the DynamoDB table tracking delivery attempts"
+  value       = aws_dynamodb_table.notification_log.name
+}
