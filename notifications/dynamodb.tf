@@ -41,3 +41,26 @@ resource "aws_dynamodb_table" "notification_log" {
     enabled        = true
   }
 }
+
+# =============================================================
+# DynamoDB Table — batch buffer
+# Incoming events land here first instead of being sent right away.
+# A scheduled Lambda run (see cloudwatch.tf) flushes this table every
+# few minutes, grouping by recipient into a single digest email.
+# =============================================================
+
+resource "aws_dynamodb_table" "batch_buffer" {
+  name         = "${var.project_name}-batch-buffer"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "buffer_id"
+
+  attribute {
+    name = "buffer_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+}
