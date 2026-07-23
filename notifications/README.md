@@ -82,7 +82,7 @@ notifications/
 
 - AWS account with credentials configured
 - Terraform >= 1.5.0
-- Python 3.11+ (for Lambda code)
+- Python 3.11+ (for Lambda code + running the test script)
 - SES sandbox or production access (verified sender + recipient emails)
 
 ---
@@ -118,19 +118,21 @@ After apply, check your inbox for two emails:
 
 ### 4. Test
 
-Send a test event:
+The test script needs `boto3`. macOS requires a virtual environment since system Python is externally managed:
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install boto3
 python scripts/send_test_event.py
 ```
 
-Paste the queue URL from `terraform output sqs_queue_url` when prompted.
+When prompted:
+- **Queue URL** — paste from `terraform output sqs_queue_url`
+- **Recipient email** — must match the verified `test_recipient_email`
+- **Send immediately?** — `y` = email arrives in seconds; `n` = waits for the next digest flush (up to `batch_window_minutes`)
 
-By default the event is buffered and the email isn't sent until the next
-scheduled flush (every `batch_window_minutes`, default 5). Answer "y" to the
-`sendImmediately` prompt in the script to skip the buffer and get an email
-right away — useful for quick testing, or for event types that shouldn't
-wait for a digest. Check CloudWatch Logs for the Lambda function either way.
+Check CloudWatch Logs for the Lambda function to watch the event get processed.
 
 ---
 
