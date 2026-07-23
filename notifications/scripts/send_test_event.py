@@ -17,6 +17,7 @@ from datetime import datetime
 
 QUEUE_URL = input("Paste your SQS queue URL (from terraform output): ").strip()
 RECIPIENT_EMAIL = input("Recipient email (must be verified in SES): ").strip()
+SEND_IMMEDIATELY = input("Send immediately instead of waiting for the digest? (y/N): ").strip().lower() == "y"
 
 sqs = boto3.client("sqs", region_name="us-east-1")
 
@@ -30,6 +31,7 @@ event = {
     "timestamp": datetime.now().isoformat(),
     "targetMemberId": None,
     "recipientEmail": RECIPIENT_EMAIL,
+    "sendImmediately": SEND_IMMEDIATELY,
     "contents": {
         "comment": "Status updated for demo test",
         "records": [
@@ -49,4 +51,8 @@ response = sqs.send_message(
 )
 
 print(f"\nMessage sent! MessageId: {response['MessageId']}")
-print("Check CloudWatch logs and your email inbox.")
+if SEND_IMMEDIATELY:
+    print("sendImmediately=true — check your inbox in a few seconds.")
+else:
+    print("Buffered for the next digest flush — check your inbox in a few minutes.")
+print("Check CloudWatch logs for the Lambda function either way.")
