@@ -42,3 +42,9 @@ variable "alarm_email" {
   description = "Email address to receive CloudWatch alarm notifications"
   type        = string
 }
+
+variable "batch_window_minutes" {
+  description = "How often the digest Lambda run flushes buffered notifications"
+  type        = number
+  default     = 5
+}
