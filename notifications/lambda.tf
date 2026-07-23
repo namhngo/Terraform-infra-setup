@@ -58,24 +58,37 @@ resource "aws_iam_role_policy" "lambda_ses" {
   })
 }
 
-# Permission 4: Lambda can read/write the idempotency + notification log tables
+# Permission 4: Lambda can read/write the idempotency, log, and buffer tables
 resource "aws_iam_role_policy" "lambda_dynamodb" {
   name = "${var.project_name}-lambda-dynamodb"
   role = aws_iam_role.lambda_role.name
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "dynamodb:GetItem",
-        "dynamodb:PutItem"
-      ]
-      Resource = [
-        aws_dynamodb_table.idempotency.arn,
-        aws_dynamodb_table.notification_log.arn
-      ]
-    }]
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "dynamodb:GetItem",
+          "dynamodb:PutItem"
+        ]
+        Resource = [
+          aws_dynamodb_table.idempotency.arn,
+          aws_dynamodb_table.notification_log.arn,
+          aws_dynamodb_table.batch_buffer.arn
+        ]
+      },
+      {
+        # Flushing the digest needs to scan all buffered items and delete
+        # them once sent — scoped to the buffer table only.
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Scan",
+          "dynamodb:DeleteItem"
+        ]
+        Resource = aws_dynamodb_table.batch_buffer.arn
+      }
+    ]
   })
 }
 
@@ -106,6 +119,7 @@ resource "aws_lambda_function" "notification_processor" {
       AWS_SES_REGION         = var.aws_region
       IDEMPOTENCY_TABLE      = aws_dynamodb_table.idempotency.name
       NOTIFICATION_LOG_TABLE = aws_dynamodb_table.notification_log.name
+      BATCH_BUFFER_TABLE     = aws_dynamodb_table.batch_buffer.name
     }
   }
 }
