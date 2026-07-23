@@ -157,43 +157,6 @@ Check CloudWatch Logs for the Lambda function to watch the event get processed.
 
 ---
 
-## Implementation Checklist
-
-### Phase 1 — Event Capture + Async Delivery
-
-- [x] SQS main notification queue
-- [x] SQS Dead Letter Queue
-- [x] Lambda function with IAM role
-- [x] SQS → Lambda event source mapping (trigger)
-- [x] SES email identities (sender + test recipient)
-- [x] Lambda handler: parses SQS events, sends email via SES
-- [x] Test script to publish events to SQS
-- [x] CloudWatch alarms (DLQ depth, Lambda errors, processing lag)
-- [ ] Backend server: publish events to SQS queue
-
-### Phase 2 — Retry + Fallback + Tracking
-
-- [x] Retry with backoff on email delivery in Lambda
-- [x] Idempotency key deduplication (DynamoDB)
-- [x] Channel fallback: EMAIL → IN_APP *(logged, since this project has no real UI to display in-app notifications)*
-- [x] Delivery tracking (every attempt logged to DynamoDB with status + timestamp)
-
-### Phase 3 — Aggregation + Batching
-
-- [x] Batch buffer table — events are stored, not sent, on arrival
-- [x] Scheduled CloudWatch trigger flushes the buffer every `batch_window_minutes`
-- [x] Digest grouping — multiple events per recipient become a single email
-- [x] `sendImmediately` flag to bypass the buffer per-event (manual opt-out, not automatic by type yet)
-
-### Phase 4 — User Preferences + New Types
-
-- [ ] Notification preferences model + API
-- [ ] Notification preferences UI
-- [ ] Targeted routing: @mention, alert assignment
-- [ ] Role-based routing
-
----
-
 ## Variables
 
 | Variable | Type | Default | Description |
@@ -228,3 +191,4 @@ Check CloudWatch Logs for the Lambda function to watch the event get processed.
 - **SMS channel** — skipped for now since it requires SNS phone number verification/cost. Current fallback chain is EMAIL → IN_APP only.
 - **Real in-app UI** — currently "in-app" just means a structured log line. A future frontend could poll `notification_log` (or a dedicated table) to actually display these.
 - **Per-type routing** — the `sendImmediately` flag lets any event opt out of batching, but nothing sets it automatically yet. A more complete system would set it based on `eventType` (e.g. always true for @mentions, always false for status changes) instead of relying on the producer to decide.
+- **User preferences** (Phase 4) — if a real backend + frontend are added later, this would need: notification preferences model/API, in-app notification UI, targeted routing (@mention/assignment), and role-based routing.
