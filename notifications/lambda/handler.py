@@ -183,6 +183,120 @@ def send_in_app_fallback(event_id, recipient, subject, body_text):
     log_delivery_attempt(event_id, recipient, "IN_APP", "SENT", 1)
 
 
+def flush_digest():
+    """Scheduled entry point (triggered by digest.tf) — reads everything
+    currently sitting in the batch buffer, groups it by recipient, and
+    sends one digest email per person instead of one email per event.
+    """
+    if not buffer_table:
+        logger.error("BATCH_BUFFER_TABLE not configured — nothing to flush")
+        return
+
+    items = scan_buffer()
+
+    if not items:
+        logger.info("Digest flush: buffer is empty, nothing to send")
+        return
+
+    grouped = {}
+    for item in items:
+        grouped.setdefault(item["recipient"], []).append(item)
+
+    logger.info(f"Digest flush: {len(items)} buffered event(s) for {len(grouped)} recipient(s)")
+
+    for recipient, events in grouped.items():
+        deliver_digest(recipient, events)
+
+
+def scan_buffer():
+    """Read every item currently sitting in the buffer table (paginated)."""
+    items = []
+    response = buffer_table.scan()
+    items.extend(response.get("Items", []))
+
+    while "LastEvaluatedKey" in response:
+        response = buffer_table.scan(ExclusiveStartKey=response["LastEvaluatedKey"])
+        items.extend(response.get("Items", []))
+
+    return items
+
+
+def deliver_digest(recipient, events):
+    """Build and send a single digest covering all buffered events for one
+    recipient, then clear those events from the buffer.
+    """
+    subject = build_digest_subject(events)
+    body_text = build_digest_body(events)
+    body_html = build_digest_html(events)
+
+    # Use the first event's id as a representative id for logging —
+    # a digest covers multiple events, not just one.
+    event_id = events[0].get("event_id")
+
+    delivered = send_with_retry(event_id, recipient, subject, body_text, body_html)
+
+    if not delivered:
+        send_in_app_fallback(event_id, recipient, subject, body_text)
+
+    clear_buffer_items(events)
+
+
+def clear_buffer_items(events):
+    """Remove buffered items once they've been delivered (or handed off to the
+    in-app fallback) so the next flush doesn't resend them.
+    """
+    for item in events:
+        try:
+            buffer_table.delete_item(Key={"buffer_id": item["buffer_id"]})
+        except ClientError as e:
+            logger.error(f"Failed to delete buffered item {item.get('buffer_id')}: {e}")
+
+
+def build_digest_subject(events):
+    if len(events) == 1:
+        contents = json.loads(events[0].get("contents", "{}"))
+        return build_subject(events[0].get("event_type", "UNKNOWN"), contents)
+    return f"[Notify] {len(events)} notification(s)"
+
+
+def build_digest_body(events):
+    if len(events) == 1:
+        contents = json.loads(events[0].get("contents", "{}"))
+        return build_body(
+            events[0].get("event_type", "UNKNOWN"),
+            events[0].get("originator_name", "System"),
+            contents,
+        )
+
+    lines = [f"You have {len(events)} notification(s):", ""]
+    for e in events:
+        contents = json.loads(e.get("contents", "{}"))
+        lines.append(f"— {e.get('event_type', 'UNKNOWN')} (from {e.get('originator_name', 'System')})")
+        lines.append(build_body(e.get("event_type", "UNKNOWN"), e.get("originator_name", "System"), contents))
+        lines.append("")
+    return "\n".join(lines)
+
+
+def build_digest_html(events):
+    if len(events) == 1:
+        contents = json.loads(events[0].get("contents", "{}"))
+        return build_html_body(
+            events[0].get("event_type", "UNKNOWN"),
+            events[0].get("originator_name", "System"),
+            contents,
+        )
+
+    fragments = "".join(
+        build_html_fragment(
+            e.get("event_type", "UNKNOWN"),
+            e.get("originator_name", "System"),
+            json.loads(e.get("contents", "{}")),
+        )
+        for e in events
+    )
+    return wrap_html_document(fragments)
+
+
 def build_subject(event_type, contents):
     if event_type == "OBS.STATUS_CHANGE":
         count = len(contents.get("records", []))
@@ -214,6 +328,13 @@ def build_body(event_type, originator, contents):
 
 
 def build_html_body(event_type, originator, contents):
+    return wrap_html_document(build_html_fragment(event_type, originator, contents))
+
+
+def build_html_fragment(event_type, originator, contents):
+    """Renders just the content block for one event — no <html>/<body> wrapper,
+    so multiple fragments can be combined into a single digest document.
+    """
     records = contents.get("records", [])
 
     rows = ""
@@ -223,8 +344,7 @@ def build_html_body(event_type, originator, contents):
         rows += f"<tr><td style='padding:4px 8px;border:1px solid #ddd;'>{obs_id}</td><td style='padding:4px 8px;border:1px solid #ddd;'>{status}</td></tr>"
 
     return f"""
-    <html>
-    <body style="font-family: Arial, sans-serif; color: #333;">
+    <div style="margin-bottom: 24px;">
         <h2 style="color: #2c5282;">{build_subject(event_type, contents)}</h2>
         <p>Triggered by: <strong>{originator}</strong></p>
         <table style="border-collapse: collapse; margin-top: 10px;">
@@ -234,6 +354,15 @@ def build_html_body(event_type, originator, contents):
             </tr>
             {rows}
         </table>
+    </div>
+    """
+
+
+def wrap_html_document(inner_html):
+    return f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; color: #333;">
+        {inner_html}
         <p style="margin-top:16px;color:#888;font-size:12px;">This is an automated notification from this system.</p>
     </body>
     </html>
