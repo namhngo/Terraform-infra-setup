@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import uuid
 import hashlib
 import boto3
 import logging
@@ -13,11 +14,14 @@ ses = boto3.client("ses", region_name=os.environ.get("AWS_SES_REGION", "us-east-
 dynamodb = boto3.resource("dynamodb")
 SENDER_EMAIL = os.environ["SENDER_EMAIL"]
 IDEMPOTENCY_TABLE = os.environ.get("IDEMPOTENCY_TABLE")
+NOTIFICATION_LOG_TABLE = os.environ.get("NOTIFICATION_LOG_TABLE")
 IDEMPOTENCY_TTL_SECONDS = 86400  # 1 day
+LOG_TTL_SECONDS = 2592000  # 30 days
 MAX_RETRIES = 3
 RETRY_BACKOFF_SECONDS = [1, 3, 7]  # delay before each retry attempt
 
-table = dynamodb.Table(IDEMPOTENCY_TABLE) if IDEMPOTENCY_TABLE else None
+idempotency_table = dynamodb.Table(IDEMPOTENCY_TABLE) if IDEMPOTENCY_TABLE else None
+log_table = dynamodb.Table(NOTIFICATION_LOG_TABLE) if NOTIFICATION_LOG_TABLE else None
 
 
 def lambda_handler(event, context):
@@ -38,10 +42,10 @@ def build_idempotency_key(msg):
 
 def already_sent(idempotency_key):
     """Check the DynamoDB table for a prior successful send with this key."""
-    if not table:
+    if not idempotency_table:
         return False
     try:
-        response = table.get_item(Key={"idempotency_key": idempotency_key})
+        response = idempotency_table.get_item(Key={"idempotency_key": idempotency_key})
         return "Item" in response
     except ClientError as e:
         logger.error(f"Idempotency check failed, proceeding anyway: {e}")
@@ -50,10 +54,10 @@ def already_sent(idempotency_key):
 
 def mark_sent(idempotency_key):
     """Record this key so a future redelivery is skipped."""
-    if not table:
+    if not idempotency_table:
         return
     try:
-        table.put_item(
+        idempotency_table.put_item(
             Item={
                 "idempotency_key": idempotency_key,
                 "expires_at": int(time.time()) + IDEMPOTENCY_TTL_SECONDS,
@@ -63,8 +67,31 @@ def mark_sent(idempotency_key):
         logger.error(f"Failed to record idempotency key (non-fatal): {e}")
 
 
+def log_delivery_attempt(event_id, recipient, channel, status, attempt_number, error_message=None):
+    """Record a delivery attempt in the notification log table (best-effort, never raises)."""
+    if not log_table:
+        return
+    try:
+        item = {
+            "log_id": str(uuid.uuid4()),
+            "event_id": event_id or "unknown",
+            "recipient": recipient,
+            "channel": channel,
+            "status": status,
+            "attempt_number": attempt_number,
+            "sent_at": int(time.time()),
+            "expires_at": int(time.time()) + LOG_TTL_SECONDS,
+        }
+        if error_message:
+            item["error_message"] = str(error_message)[:1000]
+        log_table.put_item(Item=item)
+    except ClientError as e:
+        logger.error(f"Failed to write notification log (non-fatal): {e}")
+
+
 def process_notification(msg):
-    """Parse the SQS message and send an email via SES, with idempotency + retry."""
+    """Parse the SQS message and deliver it, with idempotency, retry, tracking, and fallback."""
+    event_id = msg.get("eventId")
     event_type = msg.get("eventType", "UNKNOWN")
     originator = msg.get("originatorName", "System")
     recipient = msg.get("recipientEmail")
@@ -84,15 +111,23 @@ def process_notification(msg):
     body_text = build_body(event_type, originator, contents)
     body_html = build_html_body(event_type, originator, contents)
 
-    send_with_retry(recipient, subject, body_text, body_html)
+    delivered = send_with_retry(event_id, recipient, subject, body_text, body_html)
+
+    if not delivered:
+        # Email failed after all retries — fall back to an in-app-style notification.
+        # This project has no real frontend, so "in-app" means logging a structured
+        # message that a UI could later poll/display instead of losing the notification.
+        send_in_app_fallback(event_id, recipient, subject, body_text)
 
     mark_sent(idempotency_key)
 
 
-def send_with_retry(recipient, subject, body_text, body_html):
-    """Attempt delivery up to MAX_RETRIES times with a short backoff between attempts."""
-    last_error = None
+def send_with_retry(event_id, recipient, subject, body_text, body_html):
+    """Attempt email delivery up to MAX_RETRIES times with a short backoff between attempts.
 
+    Returns True if delivered, False if all attempts failed (never raises —
+    the caller decides whether to fall back to another channel).
+    """
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             logger.info(f"Sending email to {recipient} | subject: {subject} | attempt {attempt}")
@@ -108,17 +143,26 @@ def send_with_retry(recipient, subject, body_text, body_html):
                 },
             )
             logger.info(f"Email sent successfully to {recipient}")
-            return
+            log_delivery_attempt(event_id, recipient, "EMAIL", "SENT", attempt)
+            return True
 
         except ClientError as e:
-            last_error = e
             logger.error(f"Attempt {attempt} failed for {recipient}: {e}")
+            log_delivery_attempt(event_id, recipient, "EMAIL", "FAILED", attempt, error_message=e)
             if attempt < MAX_RETRIES:
                 time.sleep(RETRY_BACKOFF_SECONDS[attempt - 1])
 
-    # All retries exhausted — raise so SQS redelivers / eventually sends to DLQ
-    logger.error(f"All {MAX_RETRIES} attempts failed for {recipient}, giving up")
-    raise last_error
+    logger.error(f"All {MAX_RETRIES} email attempts failed for {recipient}, falling back")
+    return False
+
+
+def send_in_app_fallback(event_id, recipient, subject, body_text):
+    """Last-resort channel — this project has no in-app UI, so it just logs the
+    notification in a structured way (a real UI could poll the log table for these).
+    This channel is not expected to fail.
+    """
+    logger.info(f"[IN_APP] To: {recipient} | {subject}\n{body_text}")
+    log_delivery_attempt(event_id, recipient, "IN_APP", "SENT", 1)
 
 
 def build_subject(event_type, contents):
