@@ -21,3 +21,28 @@ output "grafana_admin_password_secret_arn" {
   description = "Secrets Manager ARN for the Grafana admin password"
   value       = aws_secretsmanager_secret.grafana_admin_password.arn
 }
+
+output "vpc_id" {
+  description = "VPC ID"
+  value       = module.vpc.vpc_id
+}
+
+output "cluster_name" {
+  description = "EKS cluster name"
+  value       = module.eks.cluster_name
+}
+
+output "cluster_endpoint" {
+  description = "EKS cluster API endpoint"
+  value       = module.eks.cluster_endpoint
+}
+
+output "cluster_oidc_issuer_url" {
+  description = "OIDC issuer URL for the EKS cluster (used by IRSA trust policies)"
+  value       = module.eks.cluster_oidc_issuer_url
+}
+
+output "configure_kubectl" {
+  description = "Command to configure kubectl for this cluster"
+  value       = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}"
+}
