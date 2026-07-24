@@ -1,11 +1,13 @@
 # Observability Infrastructure — Side Project
 
 Self-hosted Grafana LGTM stack (Loki, Tempo, Prometheus, Grafana) fronted by
-Grafana Alloy as the telemetry collector. Deployed on AWS EKS via Terraform.
+Grafana Alloy as the OTLP telemetry collector. Deployed on AWS EKS via
+Terraform.
 
-This is a **personal side project** — a complete, reusable observability stack
-that any application can point its telemetry SDK at. Think of it as your own
-self-hosted Datadog/New Relic alternative.
+This is a **personal side project** focused purely on the observability
+**platform itself** — provisioning, wiring, and operating the infrastructure.
+There's no sample app attached; the pipeline is validated with synthetic
+OTLP test data instead.
 
 ---
 
@@ -13,10 +15,7 @@ self-hosted Datadog/New Relic alternative.
 
 ```mermaid
 flowchart TB
-    subgraph Apps["Your Applications"]
-        Web["Web App\n(Faro / OTel SDK)"]
-        Backend["Backend Services\n(OTel SDK)"]
-    end
+    Client["OTLP Client\n(test data — telemetrygen / curl)"]
 
     subgraph AWS["AWS (us-east-1)"]
         subgraph VPC["VPC (10.0.0.0/16)"]
@@ -26,7 +25,7 @@ flowchart TB
             subgraph Private["Private Subnets"]
                 subgraph EKS["EKS Cluster"]
                     subgraph NS["Namespace: monitoring"]
-                        Alloy["Alloy (Deployment ×1)\n:4318 OTLP\n:12347 Faro"]
+                        Alloy["Alloy (Deployment ×1)\n:4318 OTLP/HTTP"]
                         Loki["Loki (Deployment ×1)\n:3100"]
                         Tempo["Tempo (Deployment ×1)\n:3200 HTTP\n:4317 gRPC"]
                         Prometheus["Prometheus (Deployment ×1)\n:9090\nPVC 50Gi"]
@@ -44,8 +43,7 @@ flowchart TB
         end
     end
 
-    Web -->|"OTLP/HTTP\nerrors, logs, traces"| ALB
-    Backend -->|"OTLP/gRPC\ntraces, metrics"| ALB
+    Client -->|"OTLP/HTTP\nlogs, traces, metrics"| ALB
     ALB -->|"Ingress → ClusterIP"| Alloy
 
     Alloy -->|"logs"| Loki
@@ -102,7 +100,7 @@ deploy to EKS, Docker Compose, or any other orchestrator.
 
 | File | Owned by | Purpose |
 |---|---|---|
-| `configs/alloy/config.alloy` | Alloy | Telemetry routing: Faro/OTLP → Loki/Tempo/Prometheus |
+| `configs/alloy/config.alloy` | Alloy | OTLP receiver → routes logs/traces/metrics to Loki/Tempo/Prometheus |
 | `configs/loki/loki.yml` | Loki | S3 backend, 90-day retention, schema config |
 | `configs/tempo/tempo.yml` | Tempo | S3 backend, 30-day retention, span metrics generator |
 | `configs/prometheus/prometheus.yml` | Prometheus | Scrape config, remote write receiver |
@@ -110,14 +108,14 @@ deploy to EKS, Docker Compose, or any other orchestrator.
 | `configs/grafana/dashboards.yml` | Grafana | Dashboard auto-provisioning config |
 | `configs/grafana/overview-dashboard.json` | Grafana | A sample dashboard to get started |
 
-> Configs added during implementation steps. You can customize them for your
-> own apps (CORS origins, sampling rates, alert thresholds, etc.).
+> Configs added during implementation steps. Alloy is configured as a plain
+> OTLP collector (traces/logs/metrics) — no app-specific receivers.
 
 ## Data Flow
 
 ```
-1. Your app's telemetry SDK (Faro for browser, OTel for backend) sends
-   data to the Alloy collector endpoint (ALB hostname)
+1. An OTLP client (test tool) sends logs/traces/metrics to the Alloy
+   collector endpoint (ALB hostname)
 2. ALB → Alloy Service (ClusterIP) → Alloy pod
 3. Alloy routes:
    - Logs → Loki (writes to S3 via IRSA)
@@ -199,24 +197,32 @@ aws secretsmanager get-secret-value \
   --query SecretString --output text
 ```
 
-## Connecting Your Apps
+## Validating the Pipeline
 
-Once the stack is running, point any application with OpenTelemetry or Faro
-SDK support at the Alloy collector:
+No sample app is needed — validate the stack with standard OTel tooling.
 
-```js
-// Example: Faro Web SDK (browser app)
-initializeFaro({
-  url: "http://<alb-hostname>",
-  app: { name: "my-app", version: "1.0.0" },
-});
+**Option A — `telemetrygen`** (official OpenTelemetry load generator):
 
-// Example: OTel Python (backend service)
-// OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://<alb-hostname>/v1/traces
+```bash
+go install github.com/open-telemetry/opentelemetry-collector-contrib/cmd/telemetrygen@latest
+
+telemetrygen traces --otlp-endpoint <alb-hostname>:80 --otlp-insecure --duration 30s
+telemetrygen logs   --otlp-endpoint <alb-hostname>:80 --otlp-insecure --duration 30s
+telemetrygen metrics --otlp-endpoint <alb-hostname>:80 --otlp-insecure --duration 30s
 ```
 
-All telemetry — errors, logs, traces, Web Vitals — shows up in Grafana within
-seconds.
+**Option B — plain `curl`** (OTLP/HTTP JSON):
+
+```bash
+curl -X POST "http://<alb-hostname>/v1/traces" \
+  -H "Content-Type: application/json" \
+  -d '{"resourceSpans":[]}'
+```
+
+Then check Grafana → Explore:
+- **Loki**: query `{service_name=~".+"}` — logs should appear within seconds
+- **Tempo**: search recent traces — spans should appear
+- **Prometheus**: query `up` or any `otelcol_*` metric — collector health metrics
 
 ## Cleanup
 
@@ -245,7 +251,7 @@ terraform destroy
 All infrastructure is in Terraform. Config files are plain YAML/Alloy.
 You own the whole stack:
 
-- **CORS** — add your app's domains to `configs/alloy/config.alloy`
+- **CORS** — add allowed origins to `configs/alloy/config.alloy` if you later attach a browser source
 - **Sampling** — adjust trace sampling rate (default 25%)
 - **Retention** — change S3 lifecycle rules in `s3.tf`
 - **Dashboards** — add your own Grafana dashboard JSONs
