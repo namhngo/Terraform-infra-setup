@@ -79,3 +79,11 @@ variable "node_max_size" {
   type        = number
   default     = 3
 }
+
+# --- Kubernetes ---
+
+variable "k8s_namespace" {
+  description = "Kubernetes namespace for all observability resources"
+  type        = string
+  default     = "monitoring"
+}

@@ -46,3 +46,23 @@ output "configure_kubectl" {
   description = "Command to configure kubectl for this cluster"
   value       = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.aws_region}"
 }
+
+output "loki_iam_role_arn" {
+  description = "IRSA role ARN for the Loki ServiceAccount"
+  value       = aws_iam_role.loki.arn
+}
+
+output "tempo_iam_role_arn" {
+  description = "IRSA role ARN for the Tempo ServiceAccount"
+  value       = aws_iam_role.tempo.arn
+}
+
+output "alloy_iam_role_arn" {
+  description = "IRSA role ARN for the Alloy ServiceAccount"
+  value       = aws_iam_role.alloy.arn
+}
+
+output "grafana_iam_role_arn" {
+  description = "IRSA role ARN for the Grafana ServiceAccount"
+  value       = aws_iam_role.grafana.arn
+}
