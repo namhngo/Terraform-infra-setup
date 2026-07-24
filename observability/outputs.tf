@@ -11,3 +11,13 @@ output "tempo_bucket_name" {
   description = "S3 bucket name for Tempo trace blocks"
   value       = aws_s3_bucket.tempo.id
 }
+
+output "alloy_bearer_token_secret_arn" {
+  description = "Secrets Manager ARN for the Alloy bearer token (retrieve value via aws secretsmanager get-secret-value)"
+  value       = aws_secretsmanager_secret.alloy_bearer_token.arn
+}
+
+output "grafana_admin_password_secret_arn" {
+  description = "Secrets Manager ARN for the Grafana admin password"
+  value       = aws_secretsmanager_secret.grafana_admin_password.arn
+}
