@@ -9,34 +9,34 @@ Terraform configuration for an asynchronous notification system built on SQS + L
 ```mermaid
 flowchart LR
     Backend(["Backend Server"]):::external
-    Backend -->|publish event| SQS{{"SQS Queue"}}:::edge
-    SQS --> Lambda
-    SQS -. exhausted retries .-> DLQ{{"DLQ"}}:::edge
+    SQS{{"SQS Queue"}}:::edge
+    Lambda["Lambda\nPython"]:::compute
+    SES(["SES"]):::external
+
+    Backend -->|publish| SQS --> Lambda -->|send email| SES
 
     Schedule{{"CloudWatch\nSchedule"}}:::edge
     Schedule -->|flush every N min| Lambda
 
-    subgraph proc["Processing"]
-        direction TB
-        Lambda["Lambda\nPython"]:::compute
+    subgraph tables["State Tables (DynamoDB)"]
+        Idem[("idempotency")]:::storage
+        Buffer[("batch buffer")]:::storage
+        Log[("notification log")]:::storage
     end
 
-    Idem[("DynamoDB\nidempotency")]:::storage
-    Buffer[("DynamoDB\nbatch buffer")]:::storage
-    Log[("DynamoDB\nnotification log")]:::storage
-
-    Lambda -. check/skip .-> Idem
+    Lambda -.-> Idem
     Lambda -->|buffer| Buffer
-    Lambda -->|record attempt| Log
+    Lambda -->|record| Log
 
-    SES(["SES"]):::external
-    Lambda -->|send email| SES
+    subgraph ops["Ops & Alerting"]
+        DLQ{{"DLQ"}}:::edge
+        Alarms(["SNS\nalarm topic"]):::external
+        CWLogs[("CloudWatch\nLogs")]:::storage
+    end
 
-    Alarms(["SNS\nalarm topic"]):::external
+    SQS -. retries exhausted .-> DLQ
     DLQ -.-> Alarms
     Lambda -. error rate .-> Alarms
-
-    CWLogs[("CloudWatch\nLogs")]:::storage
     Lambda -.-> CWLogs
 
     classDef external fill:#f5f5f5,stroke:#999999,color:#333333

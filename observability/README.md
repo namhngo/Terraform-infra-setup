@@ -17,33 +17,30 @@ OTLP test data instead.
 flowchart LR
     Client(["OTLP Client\ntelemetrygen / curl"]):::external
     ALB{{"ALB :80"}}:::edge
+    Alloy["Alloy\ncollector"]:::compute
+    Graf["Grafana\ndashboards"]:::compute
 
     Client --> ALB --> Alloy
 
-    subgraph cluster["EKS · monitoring namespace"]
-        direction TB
-        Alloy["Alloy\ncollector"]:::compute
+    subgraph backends["Storage Backends (EKS)"]
         Loki["Loki\nlogs"]:::compute
         Tempo["Tempo\ntraces"]:::compute
         Prom["Prometheus\nmetrics"]:::compute
-        Graf["Grafana\ndashboards"]:::compute
-
-        Alloy --> Loki
-        Alloy --> Tempo
-        Alloy --> Prom
-        Loki --> Graf
-        Tempo --> Graf
-        Prom --> Graf
     end
 
-    S3L[("S3\nloki bucket")]:::storage
-    S3T[("S3\ntempo bucket")]:::storage
-    Secrets[("Secrets\nManager")]:::storage
+    Alloy --> Loki & Tempo & Prom
+    Loki & Tempo & Prom --> Graf
 
-    Loki -. IRSA .-> S3L
-    Tempo -. IRSA .-> S3T
-    Alloy -. IRSA .-> Secrets
-    Graf -. IRSA .-> Secrets
+    subgraph aws["AWS Managed (via IRSA)"]
+        S3L[("S3\nloki bucket")]:::storage
+        S3T[("S3\ntempo bucket")]:::storage
+        Secrets[("Secrets\nManager")]:::storage
+    end
+
+    Loki -.-> S3L
+    Tempo -.-> S3T
+    Alloy -.-> Secrets
+    Graf -.-> Secrets
 
     classDef external fill:#f5f5f5,stroke:#999999,color:#333333
     classDef edge fill:#fff3cd,stroke:#cc9a06,color:#333333
