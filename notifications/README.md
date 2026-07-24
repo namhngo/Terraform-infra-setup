@@ -6,28 +6,43 @@ Terraform configuration for an asynchronous notification system built on SQS + L
 
 ## Architecture
 
-```
-                           ┌───────────────────────────────────────────────────────────────────────────────────┐
-                           │                                      AWS                                         │
-                           │                                                                                   │
-  ┌───────────────┐ publish│   ┌──────────┐   trigger   ┌────────────┐   send email   ┌───────────┐          │
-  │               │────────┼──▶│          │────────────▶│            │───────────────▶│           │          │
-  │ Backend Server│  event  │   │   SQS    │             │   Lambda   │               │    SES    │          │
-  │               │         │   │  Queue   │             │  (Python)  │               │           │          │
-  └───────────────┘         │   │          │             │            │               └───────────┘          │
-                            │   └────┬─────┘             └──▲──────┬──┘                                       │
-                            │        │                      │      │ buffer event                            │
-                            │   ┌────▼─────┐   ┌─────────────┘      ▼                                         │
-                            │   │   DLQ    │   │ every N min   ┌─────────────┐                                │
-                            │   │ (failed) │   │ CloudWatch    │ Batch Buffer│                                │
-                            │   └──────────┘   │ Schedule      │  (DynamoDB) │                                │
-                            │                  └───────────────└─────────────┘                                │
-                            │                                  │                                              │
-                            │                          ┌───────▼───────┐                                      │
-                            │                          │  CloudWatch   │                                      │
-                            │                          │    Logs       │                                      │
-                            │                          └───────────────┘                                      │
-                            └───────────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    Backend(["Backend Server"]):::external
+    Backend -->|publish event| SQS{{"SQS Queue"}}:::edge
+    SQS --> Lambda
+    SQS -. exhausted retries .-> DLQ{{"DLQ"}}:::edge
+
+    Schedule{{"CloudWatch\nSchedule"}}:::edge
+    Schedule -->|flush every N min| Lambda
+
+    subgraph proc["Processing"]
+        direction TB
+        Lambda["Lambda\nPython"]:::compute
+    end
+
+    Idem[("DynamoDB\nidempotency")]:::storage
+    Buffer[("DynamoDB\nbatch buffer")]:::storage
+    Log[("DynamoDB\nnotification log")]:::storage
+
+    Lambda -. check/skip .-> Idem
+    Lambda -->|buffer| Buffer
+    Lambda -->|record attempt| Log
+
+    SES(["SES"]):::external
+    Lambda -->|send email| SES
+
+    Alarms(["SNS\nalarm topic"]):::external
+    DLQ -.-> Alarms
+    Lambda -. error rate .-> Alarms
+
+    CWLogs[("CloudWatch\nLogs")]:::storage
+    Lambda -.-> CWLogs
+
+    classDef external fill:#f5f5f5,stroke:#999999,color:#333333
+    classDef edge fill:#fff3cd,stroke:#cc9a06,color:#333333
+    classDef compute fill:#d4e6f1,stroke:#2874a6,color:#333333
+    classDef storage fill:#d5f5e3,stroke:#1e8449,color:#333333
 ```
 
 **Flow:**
