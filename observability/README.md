@@ -14,53 +14,46 @@ OTLP test data instead.
 ## Architecture
 
 ```mermaid
-flowchart TB
-    Client["OTLP Client\n(test data — telemetrygen / curl)"]
+flowchart LR
+    Client(["OTLP Client\ntelemetrygen / curl"]):::external
+    ALB{{"ALB :80"}}:::edge
 
-    subgraph AWS["AWS (us-east-1)"]
-        subgraph VPC["VPC (10.0.0.0/16)"]
-            subgraph Public["Public Subnets"]
-                ALB["ALB (HTTP :80)\nprovisioned by LB Controller from Ingress"]
-            end
-            subgraph Private["Private Subnets"]
-                subgraph EKS["EKS Cluster"]
-                    subgraph NS["Namespace: monitoring"]
-                        Alloy["Alloy (Deployment ×1)\n:4318 OTLP/HTTP"]
-                        Loki["Loki (Deployment ×1)\n:3100"]
-                        Tempo["Tempo (Deployment ×1)\n:3200 HTTP\n:4317 gRPC"]
-                        Prometheus["Prometheus (Deployment ×1)\n:9090\nPVC 50Gi"]
-                        Grafana["Grafana (Deployment ×1)\n:3000"]
-                    end
-                end
-                Nodes["t3.medium ×2\n(eks_managed_node_group)"]
-            end
-        end
+    Client --> ALB --> Alloy
 
-        subgraph Storage["AWS Managed"]
-            S3L["S3: obs-project-loki\n90-day lifecycle"]
-            S3T["S3: obs-project-tempo\n30-day lifecycle"]
-            SM["Secrets Manager\n/obs-project/alloy-bearer-token\n/obs-project/grafana-admin-password"]
-        end
+    subgraph cluster["EKS · monitoring namespace"]
+        direction TB
+        Alloy["Alloy\ncollector"]:::compute
+        Loki["Loki\nlogs"]:::compute
+        Tempo["Tempo\ntraces"]:::compute
+        Prom["Prometheus\nmetrics"]:::compute
+        Graf["Grafana\ndashboards"]:::compute
+
+        Alloy --> Loki
+        Alloy --> Tempo
+        Alloy --> Prom
+        Loki --> Graf
+        Tempo --> Graf
+        Prom --> Graf
     end
 
-    Client -->|"OTLP/HTTP\nlogs, traces, metrics"| ALB
-    ALB -->|"Ingress → ClusterIP"| Alloy
+    S3L[("S3\nloki bucket")]:::storage
+    S3T[("S3\ntempo bucket")]:::storage
+    Secrets[("Secrets\nManager")]:::storage
 
-    Alloy -->|"logs"| Loki
-    Alloy -->|"traces"| Tempo
-    Alloy -->|"metrics"| Prometheus
+    Loki -. IRSA .-> S3L
+    Tempo -. IRSA .-> S3T
+    Alloy -. IRSA .-> Secrets
+    Graf -. IRSA .-> Secrets
 
-    Loki -->|"IRSA"| S3L
-    Tempo -->|"IRSA"| S3T
-    Alloy -.->|"IRSA"| SM
-    Grafana -.->|"IRSA"| SM
-
-    Loki --> Grafana
-    Tempo --> Grafana
-    Prometheus --> Grafana
-
-    Nodes --> EKS
+    classDef external fill:#f5f5f5,stroke:#999999,color:#333333
+    classDef edge fill:#fff3cd,stroke:#cc9a06,color:#333333
+    classDef compute fill:#d4e6f1,stroke:#2874a6,color:#333333
+    classDef storage fill:#d5f5e3,stroke:#1e8449,color:#333333
 ```
+
+> Node count on the EC2/node-group layer, VPC subnets, and WAF are omitted
+> from the diagram for readability — see [What Gets Created](#what-gets-created)
+> below for the full resource list.
 
 ## What Gets Created
 
