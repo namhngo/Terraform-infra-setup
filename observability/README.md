@@ -125,6 +125,7 @@ observability/
 ├── outputs.tf             # Cluster name, ALB hostname, S3 bucket names
 ├── s3.tf                  # 2 S3 buckets + lifecycle rules
 ├── secrets.tf             # 2 Secrets Manager secrets (auto-generated passwords)
+├── eks.tf                  # VPC + EKS cluster + managed node group
 ├── iam.tf                 # 4 IRSA roles (Loki/Tempo → S3, Alloy/Grafana → Secrets)
 ├── kubernetes.tf          # Namespace, ConfigMaps, Secrets, Deployments, Services, PVC, Ingress
 ├── lb-controller.tf       # AWS Load Balancer Controller (Helm)
@@ -159,13 +160,17 @@ Each step builds on the previous one. Commit after each step.
 | **1** | `main.tf`, `variables.tf`, `outputs.tf` | Provider config, variables, empty outputs | — |
 | **2** | `s3.tf` | 2 S3 buckets + lifecycle rules | 1 min |
 | **3** | `secrets.tf` | 2 Secrets Manager secrets | 30 sec |
-| **4** | `iam.tf` | 4 IRSA IAM roles | 1 min |
-| **5** | `main.tf` (VPC + EKS modules) | VPC, EKS cluster, node group | **25 min** |
+| **4** | `eks.tf` (VPC + EKS modules) | VPC, EKS cluster, node group | **25 min** |
+| **5** | `iam.tf` | 4 IRSA IAM roles (needs EKS OIDC provider from step 4) | 1 min |
 | **6** | `configs/` files + `kubernetes.tf` (ConfigMaps + Secrets) | Namespace, configs, K8s secrets | 1 min |
 | **7** | `kubernetes.tf` (Deployments + Services + PVC) | 5 deployments, 5 services, PVC | 2 min |
 | **8** | `lb-controller.tf` | AWS Load Balancer Controller via Helm | 2 min |
 | **9** | `kubernetes.tf` (Ingress) | ALB auto-provisioned | 3 min |
 | **10** | `waf.tf` | WAF Web ACL (optional) | 1 min |
+
+> **Order note:** IRSA roles (step 5) require the EKS cluster's OIDC
+> provider, which only exists after step 4. EKS/VPC must come before IAM,
+> reversing the naive dependency order.
 
 ## Post-Deployment
 
