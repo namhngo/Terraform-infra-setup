@@ -115,3 +115,53 @@ resource "kubernetes_secret" "grafana_auth" {
     "admin-password" = aws_secretsmanager_secret_version.grafana_admin_password.secret_string
   }
 }
+
+# --- ServiceAccounts (IRSA — see iam.tf for the underlying IAM roles) ---
+
+resource "kubernetes_service_account" "loki" {
+  metadata {
+    name      = "loki"
+    namespace = kubernetes_namespace.monitoring.metadata[0].name
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.loki.arn
+    }
+  }
+}
+
+resource "kubernetes_service_account" "tempo" {
+  metadata {
+    name      = "tempo"
+    namespace = kubernetes_namespace.monitoring.metadata[0].name
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.tempo.arn
+    }
+  }
+}
+
+resource "kubernetes_service_account" "alloy" {
+  metadata {
+    name      = "alloy"
+    namespace = kubernetes_namespace.monitoring.metadata[0].name
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.alloy.arn
+    }
+  }
+}
+
+resource "kubernetes_service_account" "grafana" {
+  metadata {
+    name      = "grafana"
+    namespace = kubernetes_namespace.monitoring.metadata[0].name
+    annotations = {
+      "eks.amazonaws.com/role-arn" = aws_iam_role.grafana.arn
+    }
+  }
+}
+
+# Prometheus needs no AWS permissions — plain ServiceAccount, no IRSA annotation.
+resource "kubernetes_service_account" "prometheus" {
+  metadata {
+    name      = "prometheus"
+    namespace = kubernetes_namespace.monitoring.metadata[0].name
+  }
+}

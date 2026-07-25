@@ -60,6 +60,16 @@ module "eks" {
   # Required for IRSA (IAM Roles for Service Accounts) used in iam.tf
   enable_irsa = true
 
+  # EBS CSI driver isn't bundled by default — required for the Prometheus
+  # PVC (dynamic gp3 volume provisioning). IRSA role defined in iam.tf;
+  # referencing it here does NOT create a cycle — the OIDC provider is a
+  # separate resource within this module that doesn't depend on cluster_addons.
+  cluster_addons = {
+    aws-ebs-csi-driver = {
+      service_account_role_arn = aws_iam_role.ebs_csi.arn
+    }
+  }
+
   tags = {
     Project = var.project_name
   }

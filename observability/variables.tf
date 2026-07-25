@@ -87,3 +87,9 @@ variable "k8s_namespace" {
   type        = string
   default     = "monitoring"
 }
+
+variable "prometheus_storage_gb" {
+  description = "Size of the Prometheus PVC in GiB"
+  type        = number
+  default     = 50
+}
