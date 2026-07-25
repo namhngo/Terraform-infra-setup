@@ -71,3 +71,8 @@ output "lb_controller_iam_role_arn" {
   description = "IRSA role ARN for the AWS Load Balancer Controller"
   value       = module.lb_controller_irsa.iam_role_arn
 }
+
+output "alb_hostname" {
+  description = "Shared ALB hostname. OTLP paths (/v1/traces, /v1/logs, /v1/metrics) route to Alloy; everything else routes to Grafana. Populates a few minutes after apply once the ALB finishes provisioning."
+  value       = try(kubernetes_ingress_v1.grafana.status[0].load_balancer[0].ingress[0].hostname, "not yet provisioned - check again in a few minutes")
+}
