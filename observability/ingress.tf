@@ -17,6 +17,7 @@ resource "kubernetes_ingress_v1" "alloy" {
       "alb.ingress.kubernetes.io/listen-ports"     = "[{\"HTTP\": 80}]"
       "alb.ingress.kubernetes.io/healthcheck-path" = "/-/ready"
       "alb.ingress.kubernetes.io/healthcheck-port" = "12345"
+      "alb.ingress.kubernetes.io/wafv2-acl-arn"    = aws_wafv2_web_acl.observability.arn
     }
   }
 

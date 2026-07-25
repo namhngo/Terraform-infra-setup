@@ -76,3 +76,8 @@ output "alb_hostname" {
   description = "Shared ALB hostname. OTLP paths (/v1/traces, /v1/logs, /v1/metrics) route to Alloy; everything else routes to Grafana. Populates a few minutes after apply once the ALB finishes provisioning."
   value       = try(kubernetes_ingress_v1.grafana.status[0].load_balancer[0].ingress[0].hostname, "not yet provisioned - check again in a few minutes")
 }
+
+output "waf_web_acl_arn" {
+  description = "WAF Web ACL ARN attached to the shared ALB"
+  value       = aws_wafv2_web_acl.observability.arn
+}
