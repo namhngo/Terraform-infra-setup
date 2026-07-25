@@ -66,3 +66,8 @@ output "grafana_iam_role_arn" {
   description = "IRSA role ARN for the Grafana ServiceAccount"
   value       = aws_iam_role.grafana.arn
 }
+
+output "lb_controller_iam_role_arn" {
+  description = "IRSA role ARN for the AWS Load Balancer Controller"
+  value       = module.lb_controller_irsa.iam_role_arn
+}
