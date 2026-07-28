@@ -316,7 +316,9 @@ Then check Grafana → Explore:
   receivers do not validate credentials and an ALB has no native bearer-token
   support, so a WAF rule blocks `/v1/*` requests that don't carry the exact
   `Authorization` header. Request sampling is disabled on that rule so the token
-  isn't written into WAF logs.
+  isn't written into WAF logs. Verified against a live deployment: no header and a
+  wrong token both return 403, the correct token returns 200, and Grafana's own
+  paths are unaffected.
 - **Grafana** has its own login; its paths aren't behind the WAF token rule.
 - **TLS is opt-in** via `domain_name`. Leaving it unset means plaintext HTTP.
 - **State contains secrets.** The generated token and password are stored in
@@ -338,8 +340,17 @@ workloads stack is still up will deadlock for the reasons described under
 [Stack layout](#stack-layout).
 
 An earlier version of this repo carried a 219-line `pre-destroy-cleanup.sh` that
-deleted ALBs, target groups, ENIs, admission webhooks and security groups by hand.
+deleted ALBs, target groups, ENIs, admission webhooks and security groups by hand,
+and even then a teardown usually needed two runs plus manual `aws` calls.
 Splitting the stacks made it unnecessary and it has been removed.
+
+Verified end to end on a full rebuild: `make apply` created 87 + 31 resources with
+no retries, and `make destroy` removed all 118 in one pass with no errors and no
+manual intervention. The public subnets and internet gateway deleted in about a
+second each — the step that used to block for minutes behind ALB ENIs — confirming
+the controller had already released its own resources before the platform stack
+was touched. An audit afterwards found no surviving cluster, VPC, load balancer,
+`k8s-*` security group, data bucket or pending-deletion secret.
 
 Three settings exist purely so the teardown completes:
 
