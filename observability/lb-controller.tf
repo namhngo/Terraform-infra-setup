@@ -63,5 +63,17 @@ resource "helm_release" "lb_controller" {
     value = kubernetes_service_account.lb_controller.metadata[0].name
   }
 
+  # By default the controller creates a shared "k8s-traffic-<cluster>" security
+  # group for ALB-to-pod traffic. It is attached to the node group ENIs, so it
+  # cannot be deleted until the node group is gone — which is after the
+  # pre-destroy hook runs — and Terraform never knew about it, so nothing else
+  # removes it either. The result is an orphaned group that blocks the VPC
+  # delete. Disabling it makes the controller add its rules to the existing node
+  # security group instead, which Terraform owns and destroys normally.
+  set {
+    name  = "enableBackendSecurityGroup"
+    value = "false"
+  }
+
   depends_on = [kubernetes_service_account.lb_controller]
 }

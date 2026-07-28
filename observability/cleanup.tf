@@ -36,8 +36,14 @@ resource "null_resource" "pre_destroy_cleanup" {
     }
   }
 
+  # module.eks keeps the node group — and therefore the controller — alive until
+  # the script returns. module.vpc is listed explicitly because the public
+  # subnets are only ever referenced by the controller's subnet auto-discovery
+  # tags, so Terraform sees no edge to them and would otherwise try to delete
+  # them while the ALB still holds ENIs there.
   depends_on = [
     module.eks,
+    module.vpc,
     helm_release.lb_controller,
     kubernetes_ingress_v1.alloy,
     kubernetes_ingress_v1.grafana,

@@ -19,6 +19,13 @@ resource "kubernetes_persistent_volume_claim" "prometheus_data" {
     name      = "prometheus-data"
     namespace = kubernetes_namespace.monitoring.metadata[0].name
   }
+
+  # The gp3 StorageClass above binds WaitForFirstConsumer, so this claim stays
+  # Pending until a pod mounts it. The provider otherwise blocks on Bound, and
+  # the only consumer is kubernetes_deployment.prometheus, which depends on this
+  # resource — a deadlock that ends in "context deadline exceeded".
+  wait_until_bound = false
+
   spec {
     access_modes       = ["ReadWriteOnce"]
     storage_class_name = kubernetes_storage_class.gp3.metadata[0].name

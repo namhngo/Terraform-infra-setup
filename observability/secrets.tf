@@ -8,6 +8,12 @@ resource "random_password" "alloy_bearer_token" {
 resource "aws_secretsmanager_secret" "alloy_bearer_token" {
   name        = "/${var.project_name}/alloy-bearer-token"
   description = "Bearer token for authenticating OTLP ingest to Alloy"
+
+  # Secrets Manager defaults to a 30-day recovery window, during which the name
+  # stays reserved and any re-apply fails with "already scheduled for deletion".
+  # This stack is torn down and rebuilt routinely, and the value is a generated
+  # token with no recovery value, so delete it immediately instead.
+  recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret_version" "alloy_bearer_token" {
@@ -24,6 +30,8 @@ resource "random_password" "grafana_admin" {
 resource "aws_secretsmanager_secret" "grafana_admin_password" {
   name        = "/${var.project_name}/grafana-admin-password"
   description = "Grafana admin login password"
+
+  recovery_window_in_days = 0
 }
 
 resource "aws_secretsmanager_secret_version" "grafana_admin_password" {

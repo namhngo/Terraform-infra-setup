@@ -231,32 +231,66 @@ terraform destroy
 # ~20 minutes to tear down everything
 ```
 
-`null_resource.pre_destroy_cleanup` (see `cleanup.tf`) runs
-`scripts/pre-destroy-cleanup.sh` before anything else is torn down. This is
-required, not a convenience.
+### Why the teardown needs help
 
 The AWS Load Balancer Controller runs inside the cluster but owns AWS resources
-— the ALB, its target groups, and its own `k8s-*` security groups. None of those
-are in Terraform state. The ingresses only depend on the EKS *cluster*, not the
-node group, so without an explicit ordering constraint Terraform will happily
-destroy the node group in parallel with the ingresses. If the node group goes
-first the controller pods die mid-teardown and the destroy deadlocks:
+that are not in Terraform state: the ALB, its target groups, and its own `k8s-*`
+security groups. Terraform deletes an ingress by removing the Kubernetes object;
+the controller notices, tears down the ALB, and only then clears its finalizer.
+That handshake requires the controller to still be running.
+
+The ingresses only depend on the EKS *cluster*, not the node group, so without an
+explicit ordering constraint Terraform destroys the node group in parallel with
+the ingresses. When the node group wins that race the controller pods die
+mid-teardown and the destroy deadlocks four ways:
 
 1. Ingress deletes hang forever on a finalizer nothing can clear.
 2. The surviving ALB keeps ENIs in the public subnets, so the subnet, IGW and
-   VPC deletes all block.
-3. `TargetGroupBinding` resources keep the namespace in `Terminating`.
-4. The controller's orphaned security groups block the VPC delete even after
-   the ALB is gone.
+   VPC deletes all block behind it.
+3. `TargetGroupBinding` objects keep the namespace in `Terminating`.
+4. The controller's security groups outlive it and block the VPC delete.
 
-The `depends_on` block in `cleanup.tf` supplies the missing edge to the node
-group, so the script gets to delete the ingresses while the controller is still
-alive to act on them. It then verifies AWS-side and sweeps up anything the
-controller failed to remove. The script is idempotent and always exits 0, so a
-re-run of `terraform destroy` after a partial teardown is safe.
+Three things prevent that:
 
-The S3 buckets set `force_destroy = true` — otherwise the destroy fails with
-`BucketNotEmpty` as soon as any telemetry has been written.
+- **`cleanup.tf`** — `depends_on` supplies the missing edges to the node group
+  and to `module.vpc`, so neither can be destroyed until the hook has run. The
+  public subnets need naming explicitly: they are only referenced by the
+  controller's subnet auto-discovery tags, so Terraform sees no edge to them.
+- **`scripts/pre-destroy-cleanup.sh`** — a rescue path, not the normal path. On a
+  healthy teardown it checks that the controller is ready and then does nothing,
+  leaving the deletes to Terraform. If the controller is already broken it drops
+  the admission webhooks (they fail closed and would reject the next step),
+  clears the ingress finalizers, and sweeps the abandoned AWS resources. It never
+  deletes anything Terraform owns — the kubernetes provider treats a missing
+  object as an error, so deleting an ingress here would just trade the deadlock
+  for `Failed to delete Ingress ... not found`.
+- **`enableBackendSecurityGroup = false`** on the controller's Helm release, so
+  it never creates the shared `k8s-traffic-<cluster>` group. That group attaches
+  to node group ENIs, meaning it is undeletable until after the node group is
+  gone — which is after the hook has already run — so no pre-destroy sweep can
+  ever catch it.
+
+The script is idempotent and always exits 0, because a failing destroy-time
+provisioner leaves the resource in state and blocks the destroy entirely.
+Re-running `terraform destroy` after a partial teardown is safe and is the
+intended recovery: by then the controller is gone, so the script takes the
+escalated path and sweeps whatever was left.
+
+### Other teardown-related settings
+
+- `force_destroy = true` on both S3 buckets. Otherwise the destroy fails with
+  `BucketNotEmpty` as soon as any telemetry has been written.
+- `recovery_window_in_days = 0` on both Secrets Manager secrets. The default
+  30-day window keeps the *name* reserved after deletion, so the next apply fails
+  with `already scheduled for deletion`. If you hit this from an older destroy,
+  purge them manually:
+
+```bash
+aws secretsmanager delete-secret --secret-id /obs-project/alloy-bearer-token \
+  --force-delete-without-recovery
+aws secretsmanager delete-secret --secret-id /obs-project/grafana-admin-password \
+  --force-delete-without-recovery
+```
 
 ## Cost
 
