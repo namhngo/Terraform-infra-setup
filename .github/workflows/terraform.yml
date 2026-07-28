@@ -1,0 +1,58 @@
+# Terraform checks for every project in this repo. Runs on push and PR.
+#
+# Two jobs:
+#   fmt      — one canonical-format check across the whole repo
+#   validate — per-root-module init (no backend) + validate, in a matrix
+#
+# validate uses `-backend=false` so it never touches real state or needs AWS
+# credentials — it only confirms the configuration parses and is internally
+# consistent. Actual plan/apply stays manual (see each project's README).
+
+name: terraform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Both observability stacks require >= 1.9 (a variable-referencing validation
+  # block). Pinned so CI is reproducible.
+  TF_VERSION: "1.9.8"
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: terraform fmt -check -recursive
+        run: terraform fmt -check -recursive
+
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir:
+          - notifications
+          - observability/platform
+          - observability/workloads
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: terraform init (no backend)
+        working-directory: ${{ matrix.dir }}
+        run: terraform init -backend=false -input=false
+      - name: terraform validate
+        working-directory: ${{ matrix.dir }}
+        run: terraform validate

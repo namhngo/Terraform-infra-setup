@@ -396,8 +396,10 @@ aws secretsmanager delete-secret --secret-id /obs-project/grafana-admin-password
   and `tempo` Helm charts already package and maintain. Migrating would cut the
   code substantially and bring upstream's upgrade paths and defaults. It is the
   largest remaining piece of non-idiomatic work in this repo.
-- **No CI.** `terraform fmt -check`, `validate` and a linter such as `tflint` or
-  `checkov` should run on every push.
+- **CI runs `fmt -check` and `validate` only.** A GitHub Actions workflow
+  (`.github/workflows/terraform.yml`, repo root) checks formatting and validates
+  all three root modules on every push and PR. A security/lint pass — `tflint` or
+  `checkov` — is the remaining addition.
 - **Single replica per component.** Fine for a side project; not highly available.
 
 ## What's Customizable

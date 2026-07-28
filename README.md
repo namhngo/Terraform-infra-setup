@@ -1,5 +1,7 @@
 # Terraform Infra Setup
 
+[![terraform](https://github.com/namhngo/Terraform-infra-setup/actions/workflows/terraform.yml/badge.svg)](https://github.com/namhngo/Terraform-infra-setup/actions/workflows/terraform.yml)
+
 Personal Terraform infrastructure projects. Each folder is an independent
 project — its own state, its own README, its own lifecycle — with nothing shared
 at this level, so any of them can be split into a standalone repository without
