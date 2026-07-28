@@ -1,8 +1,11 @@
-# Wraps the stacks in this repo so the ordering between them is not something
+# Wraps this project's stacks so the ordering between them is not something
 # anyone has to remember. Apply runs platform before workloads; destroy runs
 # workloads before platform, which is the direction that matters — tearing the
 # cluster down before the in-cluster load balancer controller has released its
 # ALB is what used to deadlock the teardown.
+#
+# Self-contained: every path below is relative to this directory, so this project
+# can be lifted into its own repository without changes.
 
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
@@ -11,8 +14,8 @@ PROJECT_NAME ?= obs-project
 AWS_REGION   ?= us-east-1
 
 BOOTSTRAP := bootstrap
-PLATFORM  := observability/platform
-WORKLOADS := observability/workloads
+PLATFORM  := platform
+WORKLOADS := workloads
 STACKS    := $(PLATFORM) $(WORKLOADS)
 
 # Resolved lazily so that targets which do not touch AWS (help, fmt) work

@@ -76,9 +76,9 @@ one-time bootstrap stack.
 
 | Stack | Owns | Providers |
 |---|---|---|
-| `bootstrap/` | S3 bucket holding remote state for everything else | `aws` |
-| `observability/platform/` | VPC, EKS, IAM, S3 data buckets, Secrets Manager, WAF, ACM | `aws` |
-| `observability/workloads/` | Namespace, ConfigMaps, Deployments, Services, PVC, Ingress, LB Controller | `kubernetes`, `helm`, `aws` |
+| `bootstrap/` | S3 bucket holding this project's remote state | `aws` |
+| `platform/` | VPC, EKS, IAM, S3 data buckets, Secrets Manager, WAF, ACM | `aws` |
+| `workloads/` | Namespace, ConfigMaps, Deployments, Services, PVC, Ingress, LB Controller | `kubernetes`, `helm`, `aws` |
 
 **This split is the point, not an organisational preference.** Two concrete
 problems come from putting them together:
@@ -167,36 +167,40 @@ deploy to EKS, Docker Compose, or any other orchestrator.
 
 ## File Structure
 
+This project is self-contained — nothing here refers to a parent directory, so it
+can be moved into its own repository as-is.
+
 ```
-.
-├── Makefile                     # Ordered apply/destroy across stacks
-├── bootstrap/                   # One-time: S3 bucket for remote state
-├── observability/
-│   ├── README.md                # ← you are here
-│   ├── platform/                # AWS only — no kubernetes/helm provider
-│   │   ├── backend.tf           # S3 remote state (bucket supplied at init)
-│   │   ├── main.tf              # terraform block + aws provider + default_tags
-│   │   ├── eks.tf               # VPC + EKS cluster + managed node group
-│   │   ├── iam.tf               # IRSA roles
-│   │   ├── s3.tf                # Loki + Tempo buckets, lifecycle, encryption
-│   │   ├── secrets.tf           # Generated bearer token + Grafana password
-│   │   ├── waf.tf               # WAF ACL incl. bearer token enforcement
-│   │   ├── acm.tf               # Optional TLS certificate
-│   │   ├── variables.tf
-│   │   └── outputs.tf           # Contract consumed by workloads/
-│   └── workloads/               # Everything in-cluster
-│       ├── backend.tf
-│       ├── main.tf              # Providers, from an EKS data source
-│       ├── remote-state.tf      # Reads platform outputs + secret values
-│       ├── kubernetes.tf        # Namespace, ConfigMaps, Secrets, ServiceAccounts
-│       ├── workloads.tf         # StorageClass, PVC, Deployments, Services
-│       ├── lb-controller.tf     # AWS Load Balancer Controller (Helm)
-│       ├── ingress.tf           # Shared-ALB Ingresses
-│       ├── dns.tf               # Route53 alias record (when TLS enabled)
-│       ├── variables.tf
-│       ├── outputs.tf
-│       └── configs/             # Service configs → mounted as ConfigMaps
-└── notifications/               # Unrelated stack
+observability/
+├── README.md                # ← you are here
+├── Makefile                 # Ordered apply/destroy across the stacks below
+├── bootstrap/               # One-time: S3 bucket for this project's state
+│   ├── main.tf
+│   ├── variables.tf
+│   └── outputs.tf
+├── platform/                # AWS only — no kubernetes/helm provider
+│   ├── backend.tf           # S3 remote state (bucket supplied at init)
+│   ├── main.tf              # terraform block + aws provider + default_tags
+│   ├── eks.tf               # VPC + EKS cluster + managed node group
+│   ├── iam.tf               # IRSA roles
+│   ├── s3.tf                # Loki + Tempo buckets, lifecycle, encryption
+│   ├── secrets.tf           # Generated bearer token + Grafana password
+│   ├── waf.tf               # WAF ACL incl. bearer token enforcement
+│   ├── acm.tf               # Optional TLS certificate
+│   ├── variables.tf
+│   └── outputs.tf           # Contract consumed by workloads/
+└── workloads/               # Everything in-cluster
+    ├── backend.tf
+    ├── main.tf              # Providers, from an EKS data source
+    ├── remote-state.tf      # Reads platform outputs + secret values
+    ├── kubernetes.tf        # Namespace, ConfigMaps, Secrets, ServiceAccounts
+    ├── workloads.tf         # StorageClass, PVC, Deployments, Services
+    ├── lb-controller.tf     # AWS Load Balancer Controller (Helm)
+    ├── ingress.tf           # Shared-ALB Ingresses
+    ├── dns.tf               # Route53 alias record (when TLS enabled)
+    ├── variables.tf
+    ├── outputs.tf
+    └── configs/             # Service configs → mounted as ConfigMaps
 ```
 
 ## Prerequisites
@@ -216,7 +220,7 @@ Manager, WAF, ACM and Route53. Full admin on a personal account is fine.
 
 ## Deploying
 
-From the repository root:
+From this directory (`observability/`):
 
 ```bash
 # Once per AWS account — creates the remote state bucket
@@ -237,7 +241,7 @@ commands for retrieving credentials when it finishes.
 Both default to the permissive option, so set them explicitly:
 
 ```hcl
-# observability/platform/terraform.tfvars
+# platform/terraform.tfvars
 
 # Without this, the Grafana password and all telemetry cross the internet in
 # plaintext. Requires a Route53-hosted domain.
