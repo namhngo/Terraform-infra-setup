@@ -1,13 +1,12 @@
 # Observability Infrastructure — Side Project
 
 Self-hosted Grafana LGTM stack (Loki, Tempo, Prometheus, Grafana) fronted by
-Grafana Alloy as the OTLP telemetry collector. Deployed on AWS EKS via
-Terraform.
+Grafana Alloy as the OTLP telemetry collector. Deployed on AWS EKS via Terraform.
 
 This is a **personal side project** focused purely on the observability
 **platform itself** — provisioning, wiring, and operating the infrastructure.
-There's no sample app attached; the pipeline is validated with synthetic
-OTLP test data instead.
+There's no sample app attached; the pipeline is validated with synthetic OTLP
+test data instead.
 
 ---
 
@@ -16,9 +15,10 @@ OTLP test data instead.
 ```mermaid
 flowchart LR
     Client(["OTLP Client\ntelemetrygen / curl"]):::external
-    ALB{{"ALB :80"}}:::edge
+    WAF["WAF\nbearer token, rate limit"]:::edge
+    ALB{{"ALB\n:443 / :80"}}:::edge
 
-    Client --> ALB
+    Client --> WAF --> ALB
 
     subgraph eks["EKS · monitoring namespace"]
         Alloy["Alloy\ncollector"]:::compute
@@ -31,7 +31,8 @@ flowchart LR
         Loki & Tempo & Prom --> Graf
     end
 
-    ALB --> Alloy
+    ALB -->|/v1/*| Alloy
+    ALB -->|/| Graf
 
     subgraph aws["AWS Managed (via IRSA)"]
         S3L[("S3\nloki bucket")]:::storage
@@ -50,68 +51,115 @@ flowchart LR
     classDef storage fill:#d5f5e3,stroke:#1e8449,color:#333333
 ```
 
-> Node count on the EC2/node-group layer, VPC subnets, and WAF are omitted
-> from the diagram for readability — see [What Gets Created](#what-gets-created)
-> below for the full resource list.
+> The node group, VPC subnets and NAT gateway are omitted from the diagram for
+> readability — see [What Gets Created](#what-gets-created) for the full list.
+
+### Why there is an ALB
+
+The stack only *runs* Alloy, Loki, Tempo, Prometheus and Grafana, but those pods
+have private, ephemeral IPs. Two things need to reach them from outside the
+cluster: you, opening Grafana, and your applications, pushing OTLP telemetry to
+Alloy. The ALB is that entrypoint — it isn't a component of the observability
+stack, it's the door into it.
+
+The ALB is not declared in Terraform. It is created by the AWS Load Balancer
+Controller, a pod running in the cluster that watches Ingress objects and
+provisions load balancers to match. This is the standard way ingress works on
+EKS: pods reschedule continuously, so only an in-cluster controller can keep
+target registrations current. It does mean the controller owns AWS resources that
+Terraform never sees, which is what drives the two-stack layout below.
+
+## Stack layout
+
+The infrastructure is split into two Terraform stacks with separate state, plus a
+one-time bootstrap stack.
+
+| Stack | Owns | Providers |
+|---|---|---|
+| `bootstrap/` | S3 bucket holding remote state for everything else | `aws` |
+| `observability/platform/` | VPC, EKS, IAM, S3 data buckets, Secrets Manager, WAF, ACM | `aws` |
+| `observability/workloads/` | Namespace, ConfigMaps, Deployments, Services, PVC, Ingress, LB Controller | `kubernetes`, `helm`, `aws` |
+
+**This split is the point, not an organisational preference.** Two concrete
+problems come from putting them together:
+
+A provider configured from a resource in its own state is unsound. When the
+`kubernetes` provider was initialised from `module.eks` outputs in the same root
+module, Terraform had to know the cluster endpoint before it could plan the
+resources that create the cluster.
+
+More visibly, the teardown deadlocked. Deleting an Ingress isn't a delete — it's a
+handshake. Terraform removes the object, the controller notices, tears down the
+ALB, and only then clears its finalizer. That needs the controller alive. But the
+Ingresses only depended on the EKS *cluster*, not the node group, so Terraform was
+free to destroy the node group in parallel and kill the controller mid-handshake.
+The result was a destroy that hung on a finalizer nothing could clear, an ALB
+pinning ENIs into the subnets so the VPC could never delete, and a namespace stuck
+`Terminating`.
+
+With the stacks split, `terraform destroy` on `workloads/` removes the Ingresses
+while the cluster and controller are fully healthy, the controller cleans up its
+own ALB exactly as designed, and destroying `platform/` afterwards finds nothing
+left behind. Ordering is enforced by the `Makefile`, so it isn't something you
+have to remember.
 
 ## What Gets Created
 
-### AWS Resources
+### AWS Resources — `platform/`
 
 | Resource | Purpose |
 |---|---|
 | **VPC** | Public + private subnets across 2 AZs. NAT gateway for private egress. |
-| **EKS Cluster** | Kubernetes control plane. Manages all deployments, services, ingress. |
+| **EKS Cluster** | Kubernetes control plane. |
 | **EKS Node Group** | 2× t3.medium EC2 instances in private subnets. |
 | **S3: `obs-project-loki`** | Loki log chunk storage (90-day lifecycle) |
 | **S3: `obs-project-tempo`** | Tempo trace block storage (30-day lifecycle) |
-| **Secrets Manager ×2** | Bearer token for collector auth + Grafana admin password |
-| **IAM Roles ×4** | IRSA: Loki→S3, Tempo→S3, Alloy→Secrets, Grafana→Secrets |
-| **WAF Web ACL** (optional) | Rate limiting + OWASP rules on the ALB |
+| **Secrets Manager ×2** | Bearer token for ingest auth + Grafana admin password |
+| **IAM Roles ×6** | IRSA: Loki→S3, Tempo→S3, Alloy→Secrets, Grafana→Secrets, EBS CSI, LB Controller |
+| **WAF Web ACL** | Bearer token enforcement on ingest, rate limiting, OWASP rules, 1 MB body cap |
+| **ACM Certificate** | HTTPS on the ALB — only when `domain_name` is set |
 
-### Kubernetes Resources
+### Kubernetes Resources — `workloads/`
 
 | Resource | Kind | Replicas |
 |---|---|---|
 | `monitoring` | Namespace | — |
 | `alloy-config`, `loki-config`, `tempo-config`, `prometheus-config` | ConfigMap | — |
-| `grafana-datasources`, `grafana-dashboards-config`, `grafana-dashboard-config` | ConfigMap | — |
+| `grafana-datasources`, `grafana-dashboards-config`, `grafana-dashboard-json` | ConfigMap | — |
 | `alloy-auth`, `grafana-auth` | Secret | — |
 | `loki`, `tempo`, `alloy`, `grafana`, `prometheus` | ServiceAccount (IRSA) | — |
 | `alloy`, `loki`, `tempo`, `prometheus`, `grafana` | Deployment | 1 |
 | `alloy`, `loki`, `tempo`, `prometheus`, `grafana` | Service (ClusterIP) | — |
 | `prometheus-data` | PersistentVolumeClaim (50Gi) | — |
+| `gp3` | StorageClass | — |
 | `alloy`, `grafana` | Ingress (shared ALB) | — |
 | `aws-load-balancer-controller` | Helm Release | 2 pods |
 
 ### Config Files
 
-Each service's configuration is stored locally in `configs/` and mounted as
-ConfigMaps. These configs are cloud-agnostic — the same files work whether you
+Each service's configuration lives in `workloads/configs/` and is mounted as a
+ConfigMap. These configs are cloud-agnostic — the same files work whether you
 deploy to EKS, Docker Compose, or any other orchestrator.
 
 | File | Owned by | Purpose |
 |---|---|---|
 | `configs/alloy/config.alloy` | Alloy | OTLP receiver → routes logs/traces/metrics to Loki/Tempo/Prometheus |
-| `configs/loki/loki.yml` | Loki | S3 backend, 90-day retention, schema config |
-| `configs/tempo/tempo.yml` | Tempo | S3 backend, 30-day retention, span metrics generator |
+| `configs/loki/loki.yml.tpl` | Loki | S3 backend, retention, schema config |
+| `configs/tempo/tempo.yml.tpl` | Tempo | S3 backend, retention, span metrics generator |
 | `configs/prometheus/prometheus.yml` | Prometheus | Scrape config, remote write receiver |
 | `configs/grafana/datasources.yml` | Grafana | Loki + Tempo + Prometheus datasources with cross-linking |
 | `configs/grafana/dashboards.yml` | Grafana | Dashboard auto-provisioning config |
 | `configs/grafana/overview-dashboard.json` | Grafana | A sample dashboard to get started |
 
-> Configs added during implementation steps. Alloy is configured as a plain
-> OTLP collector (traces/logs/metrics) — no app-specific receivers.
-
 ## Data Flow
 
 ```
-1. An OTLP client (test tool) sends logs/traces/metrics to the Alloy
-   collector endpoint (ALB hostname)
-2. ALB → Alloy Service (ClusterIP) → Alloy pod
+1. An OTLP client sends logs/traces/metrics to the ingest endpoint, with an
+   Authorization: Bearer <token> header
+2. WAF validates the header on /v1/* → ALB → Alloy Service → Alloy pod
 3. Alloy routes:
-   - Logs → Loki (writes to S3 via IRSA)
-   - Traces → Tempo (writes to S3 via IRSA)
+   - Logs    → Loki (writes to S3 via IRSA)
+   - Traces  → Tempo (writes to S3 via IRSA)
    - Metrics → Prometheus (writes to PVC)
 4. Tempo generates RED metrics (span-metrics, service-graphs) → Prometheus
 5. Grafana queries Loki, Tempo, Prometheus for dashboards and exploration
@@ -120,78 +168,101 @@ deploy to EKS, Docker Compose, or any other orchestrator.
 ## File Structure
 
 ```
-observability/
-├── README.md              # ← you are here
-├── main.tf                # Providers, VPC module, EKS module
-├── variables.tf           # All input variables with defaults
-├── outputs.tf             # Cluster name, ALB hostname, S3 bucket names
-├── s3.tf                  # 2 S3 buckets + lifecycle rules
-├── secrets.tf             # 2 Secrets Manager secrets (auto-generated passwords)
-├── eks.tf                  # VPC + EKS cluster + managed node group
-├── iam.tf                 # 4 IRSA roles (Loki/Tempo → S3, Alloy/Grafana → Secrets)
-├── kubernetes.tf          # Namespace, ConfigMaps, Secrets, Deployments, Services, PVC, Ingress
-├── lb-controller.tf       # AWS Load Balancer Controller (Helm)
-├── waf.tf                 # WAF Web ACL (optional)
-├── cleanup.tf             # Destroy-ordering guard for controller-owned AWS resources
-├── configs/               # Service config files → mounted as ConfigMaps
-│   ├── alloy/
-│   ├── loki/
-│   ├── tempo/
-│   ├── prometheus/
-│   └── grafana/
-├── scripts/
-│   └── pre-destroy-cleanup.sh   # Runs before teardown, see Cleanup
-└── .terraform/            # Git-ignored — state and plugins
+.
+├── Makefile                     # Ordered apply/destroy across stacks
+├── bootstrap/                   # One-time: S3 bucket for remote state
+├── observability/
+│   ├── README.md                # ← you are here
+│   ├── platform/                # AWS only — no kubernetes/helm provider
+│   │   ├── backend.tf           # S3 remote state (bucket supplied at init)
+│   │   ├── main.tf              # terraform block + aws provider + default_tags
+│   │   ├── eks.tf               # VPC + EKS cluster + managed node group
+│   │   ├── iam.tf               # IRSA roles
+│   │   ├── s3.tf                # Loki + Tempo buckets, lifecycle, encryption
+│   │   ├── secrets.tf           # Generated bearer token + Grafana password
+│   │   ├── waf.tf               # WAF ACL incl. bearer token enforcement
+│   │   ├── acm.tf               # Optional TLS certificate
+│   │   ├── variables.tf
+│   │   └── outputs.tf           # Contract consumed by workloads/
+│   └── workloads/               # Everything in-cluster
+│       ├── backend.tf
+│       ├── main.tf              # Providers, from an EKS data source
+│       ├── remote-state.tf      # Reads platform outputs + secret values
+│       ├── kubernetes.tf        # Namespace, ConfigMaps, Secrets, ServiceAccounts
+│       ├── workloads.tf         # StorageClass, PVC, Deployments, Services
+│       ├── lb-controller.tf     # AWS Load Balancer Controller (Helm)
+│       ├── ingress.tf           # Shared-ALB Ingresses
+│       ├── dns.tf               # Route53 alias record (when TLS enabled)
+│       ├── variables.tf
+│       ├── outputs.tf
+│       └── configs/             # Service configs → mounted as ConfigMaps
+└── notifications/               # Unrelated stack
 ```
 
 ## Prerequisites
 
 | Tool | Version | Check |
 |---|---|---|
-| Terraform | >= 1.5.0 | `terraform --version` |
+| Terraform | >= 1.11 | `terraform --version` |
 | AWS CLI | v2 | `aws --version` |
 | kubectl | >= 1.30 | `kubectl version --client` |
 | Helm | >= 3.0 | `helm version` |
 
-Your AWS credentials need permissions for: EKS, EC2, VPC, IAM, S3, Secrets Manager, WAF.
-(Full admin on a personal account is fine.)
+Terraform 1.11 is required for S3-native state locking (`use_lockfile`), which
+replaces the DynamoDB lock table older setups needed.
 
-## Implementation Order
+Your AWS credentials need permissions for EKS, EC2, VPC, IAM, S3, Secrets
+Manager, WAF, ACM and Route53. Full admin on a personal account is fine.
 
-Each step builds on the previous one. Commit after each step.
+## Deploying
 
-| Step | Files | Creates | Approx Time |
-|---|---|---|---|
-| **1** | `main.tf`, `variables.tf`, `outputs.tf` | Provider config, variables, empty outputs | — |
-| **2** | `s3.tf` | 2 S3 buckets + lifecycle rules | 1 min |
-| **3** | `secrets.tf` | 2 Secrets Manager secrets | 30 sec |
-| **4** | `eks.tf` (VPC + EKS modules) | VPC, EKS cluster, node group | **25 min** |
-| **5** | `iam.tf` | 4 IRSA IAM roles (needs EKS OIDC provider from step 4) | 1 min |
-| **6** | `configs/` files + `kubernetes.tf` (ConfigMaps + Secrets) | Namespace, configs, K8s secrets | 1 min |
-| **7** | `kubernetes.tf` (Deployments + Services + PVC) | 5 deployments, 5 services, PVC | 2 min |
-| **8** | `lb-controller.tf` | AWS Load Balancer Controller via Helm | 2 min |
-| **9** | `kubernetes.tf` (Ingress) | ALB auto-provisioned | 3 min |
-| **10** | `waf.tf` | WAF Web ACL (optional) | 1 min |
+From the repository root:
 
-> **Order note:** IRSA roles (step 5) require the EKS cluster's OIDC
-> provider, which only exists after step 4. EKS/VPC must come before IAM,
-> reversing the naive dependency order.
+```bash
+# Once per AWS account — creates the remote state bucket
+make bootstrap
+
+# Initialise both stacks against that bucket
+make init
+
+# Apply platform (~25 min, mostly EKS), then workloads (~5 min)
+make apply
+```
+
+`make apply` runs the stacks in the right order and prints the endpoint and the
+commands for retrieving credentials when it finishes.
+
+### Recommended settings
+
+Both default to the permissive option, so set them explicitly:
+
+```hcl
+# observability/platform/terraform.tfvars
+
+# Without this, the Grafana password and all telemetry cross the internet in
+# plaintext. Requires a Route53-hosted domain.
+domain_name     = "example.com"
+route53_zone_id = "Z0123456789ABCDEFGHIJ"
+
+# Without this, your Kubernetes API server accepts connection attempts from
+# anywhere. `curl -s https://checkip.amazonaws.com` prints your address.
+cluster_endpoint_public_access_cidrs = ["203.0.113.4/32"]
+```
 
 ## Post-Deployment
 
 ```bash
-# Get the ALB hostname
+make output
+```
+
+```bash
+# Point kubectl at the cluster
+aws eks update-kubeconfig --name obs-project-cluster --region us-east-1
+
+# Confirm the shared ALB came up — both Ingresses show the same address
 kubectl -n monitoring get ingress
 
-# Output:
-# NAME      CLASS   HOSTS   ADDRESS
-# alloy     alb     *       k8s-monitori-alloy-abc123.us-east-1.elb.amazonaws.com
-# grafana   alb     *       (same hostname — shared ALB)
-
-# Open Grafana
-open http://<alb-hostname>
-
-# Get the admin password
+# Grafana admin password
 aws secretsmanager get-secret-value \
   --secret-id /obs-project/grafana-admin-password \
   --query SecretString --output text
@@ -199,91 +270,89 @@ aws secretsmanager get-secret-value \
 
 ## Validating the Pipeline
 
-No sample app is needed — validate the stack with standard OTel tooling.
+No sample app is needed — validate with standard OTel tooling. The ingest paths
+require the bearer token; without it WAF returns 403.
+
+```bash
+export OTLP_HOST=<endpoint from make output>
+export OTLP_TOKEN=$(aws secretsmanager get-secret-value \
+  --secret-id /obs-project/alloy-bearer-token \
+  --query SecretString --output text)
+```
 
 **Option A — `telemetrygen`** (official OpenTelemetry load generator):
 
 ```bash
 go install github.com/open-telemetry/opentelemetry-collector-contrib/cmd/telemetrygen@latest
 
-telemetrygen traces --otlp-endpoint <alb-hostname>:80 --otlp-insecure --duration 30s
-telemetrygen logs   --otlp-endpoint <alb-hostname>:80 --otlp-insecure --duration 30s
-telemetrygen metrics --otlp-endpoint <alb-hostname>:80 --otlp-insecure --duration 30s
+telemetrygen traces \
+  --otlp-endpoint "$OTLP_HOST:443" \
+  --otlp-header "Authorization=\"Bearer $OTLP_TOKEN\"" \
+  --duration 30s
 ```
 
 **Option B — plain `curl`** (OTLP/HTTP JSON):
 
 ```bash
-curl -X POST "http://<alb-hostname>/v1/traces" \
+curl -X POST "https://$OTLP_HOST/v1/traces" \
+  -H "Authorization: Bearer $OTLP_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"resourceSpans":[]}'
+
+# Expect 403 without the header
+curl -o /dev/null -w '%{http_code}\n' -X POST "https://$OTLP_HOST/v1/traces" \
+  -H "Content-Type: application/json" -d '{"resourceSpans":[]}'
 ```
 
 Then check Grafana → Explore:
+
 - **Loki**: query `{service_name=~".+"}` — logs should appear within seconds
 - **Tempo**: search recent traces — spans should appear
 - **Prometheus**: query `up` or any `otelcol_*` metric — collector health metrics
 
+## Security notes
+
+- **Ingest authentication is enforced at WAF**, not in Alloy. Alloy's OTLP
+  receivers do not validate credentials and an ALB has no native bearer-token
+  support, so a WAF rule blocks `/v1/*` requests that don't carry the exact
+  `Authorization` header. Request sampling is disabled on that rule so the token
+  isn't written into WAF logs.
+- **Grafana** has its own login; its paths aren't behind the WAF token rule.
+- **TLS is opt-in** via `domain_name`. Leaving it unset means plaintext HTTP.
+- **State contains secrets.** The generated token and password are stored in
+  plaintext in state, which is why the bootstrap bucket is encrypted, versioned,
+  private, and denies non-TLS requests.
+
 ## Cleanup
 
 ```bash
-terraform destroy
-# ~20 minutes to tear down everything
+make destroy
+# ~20 minutes
 ```
 
-### Why the teardown needs help
+Order matters and the Makefile handles it: `workloads` is destroyed first so the
+load balancer controller can release its ALB, target groups and security group
+rules while it's still running; `platform` follows once nothing controller-owned
+remains. Running `terraform destroy` directly inside `platform/` while the
+workloads stack is still up will deadlock for the reasons described under
+[Stack layout](#stack-layout).
 
-The AWS Load Balancer Controller runs inside the cluster but owns AWS resources
-that are not in Terraform state: the ALB, its target groups, and its own `k8s-*`
-security groups. Terraform deletes an ingress by removing the Kubernetes object;
-the controller notices, tears down the ALB, and only then clears its finalizer.
-That handshake requires the controller to still be running.
+An earlier version of this repo carried a 219-line `pre-destroy-cleanup.sh` that
+deleted ALBs, target groups, ENIs, admission webhooks and security groups by hand.
+Splitting the stacks made it unnecessary and it has been removed.
 
-The ingresses only depend on the EKS *cluster*, not the node group, so without an
-explicit ordering constraint Terraform destroys the node group in parallel with
-the ingresses. When the node group wins that race the controller pods die
-mid-teardown and the destroy deadlocks four ways:
+Three settings exist purely so the teardown completes:
 
-1. Ingress deletes hang forever on a finalizer nothing can clear.
-2. The surviving ALB keeps ENIs in the public subnets, so the subnet, IGW and
-   VPC deletes all block behind it.
-3. `TargetGroupBinding` objects keep the namespace in `Terminating`.
-4. The controller's security groups outlive it and block the VPC delete.
+- `force_destroy = true` on both data buckets — otherwise the destroy fails with
+  `BucketNotEmpty` once any telemetry has been written.
+- `recovery_window_in_days = 0` on both secrets — the default 30-day window keeps
+  the *name* reserved after deletion, so the next apply fails with `already
+  scheduled for deletion`.
+- `enableBackendSecurityGroup = false` on the LB Controller — otherwise it creates
+  a shared `k8s-traffic-<cluster>` security group attached to node group ENIs,
+  which nothing in Terraform owns and which blocks the VPC delete.
 
-Three things prevent that:
-
-- **`cleanup.tf`** — `depends_on` supplies the missing edges to the node group
-  and to `module.vpc`, so neither can be destroyed until the hook has run. The
-  public subnets need naming explicitly: they are only referenced by the
-  controller's subnet auto-discovery tags, so Terraform sees no edge to them.
-- **`scripts/pre-destroy-cleanup.sh`** — a rescue path, not the normal path. On a
-  healthy teardown it checks that the controller is ready and then does nothing,
-  leaving the deletes to Terraform. If the controller is already broken it drops
-  the admission webhooks (they fail closed and would reject the next step),
-  clears the ingress finalizers, and sweeps the abandoned AWS resources. It never
-  deletes anything Terraform owns — the kubernetes provider treats a missing
-  object as an error, so deleting an ingress here would just trade the deadlock
-  for `Failed to delete Ingress ... not found`.
-- **`enableBackendSecurityGroup = false`** on the controller's Helm release, so
-  it never creates the shared `k8s-traffic-<cluster>` group. That group attaches
-  to node group ENIs, meaning it is undeletable until after the node group is
-  gone — which is after the hook has already run — so no pre-destroy sweep can
-  ever catch it.
-
-The script is idempotent and always exits 0, because a failing destroy-time
-provisioner leaves the resource in state and blocks the destroy entirely.
-Re-running `terraform destroy` after a partial teardown is safe and is the
-intended recovery: by then the controller is gone, so the script takes the
-escalated path and sweeps whatever was left.
-
-### Other teardown-related settings
-
-- `force_destroy = true` on both S3 buckets. Otherwise the destroy fails with
-  `BucketNotEmpty` as soon as any telemetry has been written.
-- `recovery_window_in_days = 0` on both Secrets Manager secrets. The default
-  30-day window keeps the *name* reserved after deletion, so the next apply fails
-  with `already scheduled for deletion`. If you hit this from an older destroy,
-  purge them manually:
+If you hit the secrets error from a destroy that predates this change:
 
 ```bash
 aws secretsmanager delete-secret --secret-id /obs-project/alloy-bearer-token \
@@ -291,6 +360,9 @@ aws secretsmanager delete-secret --secret-id /obs-project/alloy-bearer-token \
 aws secretsmanager delete-secret --secret-id /obs-project/grafana-admin-password \
   --force-delete-without-recovery
 ```
+
+The state bucket is deliberately left out of `make destroy`; it has no
+`force_destroy` and outlives the infrastructure.
 
 ## Cost
 
@@ -300,22 +372,31 @@ aws secretsmanager delete-secret --secret-id /obs-project/grafana-admin-password
 | 2 × t3.medium EC2 | ~$59.00 |
 | NAT Gateway | ~$32.00 |
 | ALB | ~$18.00 |
+| WAF Web ACL | ~$6.00 |
 | S3 (minimal data) | < $1.00 |
 | Secrets Manager (2 secrets) | $1.00 |
-| **Total** | **~$184/month** |
+| **Total** | **~$190/month** |
 
-> Reduce cost: set `node_desired_size = 1`, use a single NAT Gateway.
-> Run `terraform destroy` between sessions to avoid idle costs.
+> Reduce cost: set `node_desired_size = 1`, keep `single_nat_gateway = true`.
+> Run `make destroy` between sessions to avoid idle costs.
+
+## Known gaps
+
+- **The workloads are hand-rolled.** `workloads.tf` is ~550 lines of
+  `kubernetes_deployment` reimplementing what the `kube-prometheus-stack`, `loki`
+  and `tempo` Helm charts already package and maintain. Migrating would cut the
+  code substantially and bring upstream's upgrade paths and defaults. It is the
+  largest remaining piece of non-idiomatic work in this repo.
+- **No CI.** `terraform fmt -check`, `validate` and a linter such as `tflint` or
+  `checkov` should run on every push.
+- **Single replica per component.** Fine for a side project; not highly available.
 
 ## What's Customizable
 
-All infrastructure is in Terraform. Config files are plain YAML/Alloy.
-You own the whole stack:
-
-- **CORS** — add allowed origins to `configs/alloy/config.alloy` if you later attach a browser source
-- **Sampling** — adjust trace sampling rate (default 25%)
-- **Retention** — change S3 lifecycle rules in `s3.tf`
-- **Dashboards** — add your own Grafana dashboard JSONs
+- **Sampling** — adjust trace sampling rate in `configs/alloy/config.alloy`
+- **Retention** — `loki_retention_days` / `tempo_retention_days`, which drive both
+  the S3 lifecycle rules and the service configs
+- **Dashboards** — add Grafana dashboard JSONs under `configs/grafana/`
 - **Alerts** — add alert rules in Grafana provisioning
-- **Auth** — add bearer token validation, SSO, or IP whitelisting
-- **Scaling** — increase node count or instance type in `main.tf`
+- **Auth** — Grafana SSO, or tighten the WAF rules further
+- **Scaling** — `node_desired_size`, `node_max_size`, `node_instance_type`
