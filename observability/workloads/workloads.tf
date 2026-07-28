@@ -1,6 +1,7 @@
 # gp3 StorageClass — EKS doesn't provide one by default post-1.23
 # (in-tree gp2 provisioner is deprecated; EBS CSI driver requires an
-# explicit StorageClass).
+# explicit StorageClass). The EBS CSI driver addon itself is a cluster addon in
+# the platform stack, so it is already present by the time this stack runs.
 resource "kubernetes_storage_class" "gp3" {
   metadata {
     name = "gp3"
@@ -10,8 +11,6 @@ resource "kubernetes_storage_class" "gp3" {
   parameters = {
     type = "gp3"
   }
-
-  depends_on = [module.eks]
 }
 
 resource "kubernetes_persistent_volume_claim" "prometheus_data" {

@@ -1,7 +1,7 @@
 # Namespace for all observability resources.
 resource "kubernetes_namespace" "monitoring" {
   metadata {
-    name = var.k8s_namespace
+    name = local.namespace
   }
 }
 
@@ -26,9 +26,9 @@ resource "kubernetes_config_map" "loki_config" {
 
   data = {
     "loki.yml" = templatefile("${path.module}/configs/loki/loki.yml.tpl", {
-      bucket_name     = aws_s3_bucket.loki.id
-      region          = var.aws_region
-      retention_hours = var.loki_retention_days * 24
+      bucket_name     = local.platform.loki_bucket
+      region          = local.platform.aws_region
+      retention_hours = local.platform.loki_retention_hours
     })
   }
 }
@@ -41,9 +41,9 @@ resource "kubernetes_config_map" "tempo_config" {
 
   data = {
     "tempo.yml" = templatefile("${path.module}/configs/tempo/tempo.yml.tpl", {
-      bucket_name     = aws_s3_bucket.tempo.id
-      region          = var.aws_region
-      retention_hours = var.tempo_retention_days * 24
+      bucket_name     = local.platform.tempo_bucket
+      region          = local.platform.aws_region
+      retention_hours = local.platform.tempo_retention_hours
     })
   }
 }
@@ -92,7 +92,9 @@ resource "kubernetes_config_map" "grafana_dashboard_json" {
   }
 }
 
-# --- Secrets (values sourced from Secrets Manager, see secrets.tf) ---
+# --- Secrets ---
+# Values are read from Secrets Manager at apply time (see remote-state.tf); the
+# platform stack owns them.
 
 resource "kubernetes_secret" "alloy_auth" {
   metadata {
@@ -101,7 +103,7 @@ resource "kubernetes_secret" "alloy_auth" {
   }
 
   data = {
-    "bearer-token" = aws_secretsmanager_secret_version.alloy_bearer_token.secret_string
+    "bearer-token" = data.aws_secretsmanager_secret_version.alloy_bearer_token.secret_string
   }
 }
 
@@ -112,18 +114,18 @@ resource "kubernetes_secret" "grafana_auth" {
   }
 
   data = {
-    "admin-password" = aws_secretsmanager_secret_version.grafana_admin_password.secret_string
+    "admin-password" = data.aws_secretsmanager_secret_version.grafana_admin_password.secret_string
   }
 }
 
-# --- ServiceAccounts (IRSA — see iam.tf for the underlying IAM roles) ---
+# --- ServiceAccounts (IRSA — roles are created in the platform stack) ---
 
 resource "kubernetes_service_account" "loki" {
   metadata {
     name      = "loki"
     namespace = kubernetes_namespace.monitoring.metadata[0].name
     annotations = {
-      "eks.amazonaws.com/role-arn" = aws_iam_role.loki.arn
+      "eks.amazonaws.com/role-arn" = local.role_arns.loki
     }
   }
 }
@@ -133,7 +135,7 @@ resource "kubernetes_service_account" "tempo" {
     name      = "tempo"
     namespace = kubernetes_namespace.monitoring.metadata[0].name
     annotations = {
-      "eks.amazonaws.com/role-arn" = aws_iam_role.tempo.arn
+      "eks.amazonaws.com/role-arn" = local.role_arns.tempo
     }
   }
 }
@@ -143,7 +145,7 @@ resource "kubernetes_service_account" "alloy" {
     name      = "alloy"
     namespace = kubernetes_namespace.monitoring.metadata[0].name
     annotations = {
-      "eks.amazonaws.com/role-arn" = aws_iam_role.alloy.arn
+      "eks.amazonaws.com/role-arn" = local.role_arns.alloy
     }
   }
 }
@@ -153,7 +155,7 @@ resource "kubernetes_service_account" "grafana" {
     name      = "grafana"
     namespace = kubernetes_namespace.monitoring.metadata[0].name
     annotations = {
-      "eks.amazonaws.com/role-arn" = aws_iam_role.grafana.arn
+      "eks.amazonaws.com/role-arn" = local.role_arns.grafana
     }
   }
 }

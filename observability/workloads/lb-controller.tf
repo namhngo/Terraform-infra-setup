@@ -1,25 +1,14 @@
-# AWS Load Balancer Controller — watches Ingress resources and
-# auto-provisions ALBs. Runs in kube-system, not the monitoring namespace,
-# since it's a cluster-wide controller, not an observability component.
-
-# IRSA role using the official AWS-published policy via the community
-# submodule — that policy has ~20 statements and changes with new ALB
-# features, not worth hand-maintaining like the simpler roles in iam.tf.
-module "lb_controller_irsa" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
-  version = "~> 5.0"
-
-  role_name = "${var.project_name}-lb-controller"
-
-  attach_load_balancer_controller_policy = true
-
-  oidc_providers = {
-    main = {
-      provider_arn               = module.eks.oidc_provider_arn
-      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
-    }
-  }
-}
+# AWS Load Balancer Controller — watches Ingress resources and provisions the
+# ALB. Runs in kube-system, not the monitoring namespace, since it is a
+# cluster-wide controller rather than an observability component.
+#
+# It owns AWS resources that are not in any Terraform state: the ALB, its target
+# groups and its listeners. That is normal and is how ingress works on EKS — pods
+# reschedule continuously, so only an in-cluster controller can keep target
+# registrations current. It does mean the controller must outlive the ingresses
+# during a teardown, which is exactly what the stack split guarantees.
+#
+# The IRSA role is created in the platform stack; only the release lives here.
 
 resource "kubernetes_service_account" "lb_controller" {
   metadata {
@@ -30,7 +19,7 @@ resource "kubernetes_service_account" "lb_controller" {
       "app.kubernetes.io/component" = "controller"
     }
     annotations = {
-      "eks.amazonaws.com/role-arn" = module.lb_controller_irsa.iam_role_arn
+      "eks.amazonaws.com/role-arn" = local.role_arns.lb_controller
     }
   }
 }
@@ -44,7 +33,7 @@ resource "helm_release" "lb_controller" {
 
   set {
     name  = "clusterName"
-    value = module.eks.cluster_name
+    value = data.aws_eks_cluster.this.name
   }
   set {
     name  = "region"
@@ -52,7 +41,7 @@ resource "helm_release" "lb_controller" {
   }
   set {
     name  = "vpcId"
-    value = module.vpc.vpc_id
+    value = local.platform.vpc_id
   }
   set {
     name  = "serviceAccount.create"
@@ -64,12 +53,11 @@ resource "helm_release" "lb_controller" {
   }
 
   # By default the controller creates a shared "k8s-traffic-<cluster>" security
-  # group for ALB-to-pod traffic. It is attached to the node group ENIs, so it
-  # cannot be deleted until the node group is gone — which is after the
-  # pre-destroy hook runs — and Terraform never knew about it, so nothing else
-  # removes it either. The result is an orphaned group that blocks the VPC
-  # delete. Disabling it makes the controller add its rules to the existing node
-  # security group instead, which Terraform owns and destroys normally.
+  # group for ALB-to-pod traffic and attaches it to the node group ENIs, which
+  # makes it undeletable until the nodes are gone — and Terraform never knew it
+  # existed, so nothing removed it and it blocked the VPC delete. Disabling it
+  # makes the controller add its rules to the node security group instead, which
+  # the platform stack owns and destroys normally.
   set {
     name  = "enableBackendSecurityGroup"
     value = "false"
