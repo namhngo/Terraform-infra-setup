@@ -132,12 +132,15 @@ observability/
 ├── kubernetes.tf          # Namespace, ConfigMaps, Secrets, Deployments, Services, PVC, Ingress
 ├── lb-controller.tf       # AWS Load Balancer Controller (Helm)
 ├── waf.tf                 # WAF Web ACL (optional)
+├── cleanup.tf             # Destroy-ordering guard for controller-owned AWS resources
 ├── configs/               # Service config files → mounted as ConfigMaps
 │   ├── alloy/
 │   ├── loki/
 │   ├── tempo/
 │   ├── prometheus/
 │   └── grafana/
+├── scripts/
+│   └── pre-destroy-cleanup.sh   # Runs before teardown, see Cleanup
 └── .terraform/            # Git-ignored — state and plugins
 ```
 
@@ -227,6 +230,33 @@ Then check Grafana → Explore:
 terraform destroy
 # ~20 minutes to tear down everything
 ```
+
+`null_resource.pre_destroy_cleanup` (see `cleanup.tf`) runs
+`scripts/pre-destroy-cleanup.sh` before anything else is torn down. This is
+required, not a convenience.
+
+The AWS Load Balancer Controller runs inside the cluster but owns AWS resources
+— the ALB, its target groups, and its own `k8s-*` security groups. None of those
+are in Terraform state. The ingresses only depend on the EKS *cluster*, not the
+node group, so without an explicit ordering constraint Terraform will happily
+destroy the node group in parallel with the ingresses. If the node group goes
+first the controller pods die mid-teardown and the destroy deadlocks:
+
+1. Ingress deletes hang forever on a finalizer nothing can clear.
+2. The surviving ALB keeps ENIs in the public subnets, so the subnet, IGW and
+   VPC deletes all block.
+3. `TargetGroupBinding` resources keep the namespace in `Terminating`.
+4. The controller's orphaned security groups block the VPC delete even after
+   the ALB is gone.
+
+The `depends_on` block in `cleanup.tf` supplies the missing edge to the node
+group, so the script gets to delete the ingresses while the controller is still
+alive to act on them. It then verifies AWS-side and sweeps up anything the
+controller failed to remove. The script is idempotent and always exits 0, so a
+re-run of `terraform destroy` after a partial teardown is safe.
+
+The S3 buckets set `force_destroy = true` — otherwise the destroy fails with
+`BucketNotEmpty` as soon as any telemetry has been written.
 
 ## Cost
 
