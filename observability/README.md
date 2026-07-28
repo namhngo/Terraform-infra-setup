@@ -17,19 +17,21 @@ OTLP test data instead.
 flowchart LR
     Client(["OTLP Client\ntelemetrygen / curl"]):::external
     ALB{{"ALB :80"}}:::edge
-    Alloy["Alloy\ncollector"]:::compute
-    Graf["Grafana\ndashboards"]:::compute
 
-    Client --> ALB --> Alloy
+    Client --> ALB
 
-    subgraph backends["Storage Backends (EKS)"]
+    subgraph eks["EKS · monitoring namespace"]
+        Alloy["Alloy\ncollector"]:::compute
         Loki["Loki\nlogs"]:::compute
         Tempo["Tempo\ntraces"]:::compute
         Prom["Prometheus\nmetrics"]:::compute
+        Graf["Grafana\ndashboards"]:::compute
+
+        Alloy --> Loki & Tempo & Prom
+        Loki & Tempo & Prom --> Graf
     end
 
-    Alloy --> Loki & Tempo & Prom
-    Loki & Tempo & Prom --> Graf
+    ALB --> Alloy
 
     subgraph aws["AWS Managed (via IRSA)"]
         S3L[("S3\nloki bucket")]:::storage
