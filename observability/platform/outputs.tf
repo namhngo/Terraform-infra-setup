@@ -74,10 +74,10 @@ output "tempo_retention_hours" {
 output "iam_role_arns" {
   description = "IRSA role ARNs keyed by ServiceAccount name"
   value = {
-    loki          = aws_iam_role.loki.arn
-    tempo         = aws_iam_role.tempo.arn
-    alloy         = aws_iam_role.alloy.arn
-    grafana       = aws_iam_role.grafana.arn
+    loki          = aws_iam_role.irsa["loki"].arn
+    tempo         = aws_iam_role.irsa["tempo"].arn
+    alloy         = aws_iam_role.irsa["alloy"].arn
+    grafana       = aws_iam_role.irsa["grafana"].arn
     lb_controller = module.lb_controller_irsa.iam_role_arn
   }
 }

@@ -4,11 +4,40 @@
 
 locals {
   oidc_provider_url = replace(module.eks.cluster_oidc_issuer_url, "https://", "")
+
+  # One entry per pod-scoped IRSA role. Each maps a ServiceAccount (the map key,
+  # in var.k8s_namespace) to the single inline policy it needs. The EBS CSI and
+  # LB controller roles are kept separate below — they live in kube-system and
+  # use AWS-managed policies rather than this inline shape.
+  irsa_roles = {
+    loki = {
+      policy_suffix = "s3"
+      actions       = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
+      resources     = [aws_s3_bucket.loki.arn, "${aws_s3_bucket.loki.arn}/*"]
+    }
+    tempo = {
+      policy_suffix = "s3"
+      actions       = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
+      resources     = [aws_s3_bucket.tempo.arn, "${aws_s3_bucket.tempo.arn}/*"]
+    }
+    alloy = {
+      policy_suffix = "secrets"
+      actions       = ["secretsmanager:GetSecretValue"]
+      resources     = [aws_secretsmanager_secret.alloy_bearer_token.arn]
+    }
+    grafana = {
+      policy_suffix = "secrets"
+      actions       = ["secretsmanager:GetSecretValue"]
+      resources     = [aws_secretsmanager_secret.grafana_admin_password.arn]
+    }
+  }
 }
 
-# --- Loki: read/write access to its S3 bucket ---
+# Trust policy — identical shape for every role, differing only in the
+# ServiceAccount named in the `sub` condition (the map key).
+data "aws_iam_policy_document" "irsa_assume_role" {
+  for_each = local.irsa_roles
 
-data "aws_iam_policy_document" "loki_assume_role" {
   statement {
     effect  = "Allow"
     actions = ["sts:AssumeRoleWithWebIdentity"]
@@ -21,7 +50,7 @@ data "aws_iam_policy_document" "loki_assume_role" {
     condition {
       test     = "StringEquals"
       variable = "${local.oidc_provider_url}:sub"
-      values   = ["system:serviceaccount:${var.k8s_namespace}:loki"]
+      values   = ["system:serviceaccount:${var.k8s_namespace}:${each.key}"]
     }
     condition {
       test     = "StringEquals"
@@ -31,171 +60,33 @@ data "aws_iam_policy_document" "loki_assume_role" {
   }
 }
 
-resource "aws_iam_role" "loki" {
-  name               = "${var.project_name}-loki"
-  assume_role_policy = data.aws_iam_policy_document.loki_assume_role.json
+resource "aws_iam_role" "irsa" {
+  for_each = local.irsa_roles
+
+  name               = "${var.project_name}-${each.key}"
+  assume_role_policy = data.aws_iam_policy_document.irsa_assume_role[each.key].json
 }
 
-resource "aws_iam_policy" "loki_s3" {
-  name = "${var.project_name}-loki-s3"
+resource "aws_iam_policy" "irsa" {
+  for_each = local.irsa_roles
+
+  name = "${var.project_name}-${each.key}-${each.value.policy_suffix}"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
-      Resource = [aws_s3_bucket.loki.arn, "${aws_s3_bucket.loki.arn}/*"]
+      Action   = each.value.actions
+      Resource = each.value.resources
     }]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "loki" {
-  role       = aws_iam_role.loki.name
-  policy_arn = aws_iam_policy.loki_s3.arn
-}
+resource "aws_iam_role_policy_attachment" "irsa" {
+  for_each = local.irsa_roles
 
-# --- Tempo: read/write access to its S3 bucket ---
-
-data "aws_iam_policy_document" "tempo_assume_role" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [module.eks.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_provider_url}:sub"
-      values   = ["system:serviceaccount:${var.k8s_namespace}:tempo"]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_provider_url}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "tempo" {
-  name               = "${var.project_name}-tempo"
-  assume_role_policy = data.aws_iam_policy_document.tempo_assume_role.json
-}
-
-resource "aws_iam_policy" "tempo_s3" {
-  name = "${var.project_name}-tempo-s3"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
-      Resource = [aws_s3_bucket.tempo.arn, "${aws_s3_bucket.tempo.arn}/*"]
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "tempo" {
-  role       = aws_iam_role.tempo.name
-  policy_arn = aws_iam_policy.tempo_s3.arn
-}
-
-# --- Alloy: read access to the bearer token secret ---
-
-data "aws_iam_policy_document" "alloy_assume_role" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [module.eks.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_provider_url}:sub"
-      values   = ["system:serviceaccount:${var.k8s_namespace}:alloy"]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_provider_url}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "alloy" {
-  name               = "${var.project_name}-alloy"
-  assume_role_policy = data.aws_iam_policy_document.alloy_assume_role.json
-}
-
-resource "aws_iam_policy" "alloy_secrets" {
-  name = "${var.project_name}-alloy-secrets"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["secretsmanager:GetSecretValue"]
-      Resource = [aws_secretsmanager_secret.alloy_bearer_token.arn]
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "alloy" {
-  role       = aws_iam_role.alloy.name
-  policy_arn = aws_iam_policy.alloy_secrets.arn
-}
-
-# --- Grafana: read access to the admin password secret ---
-
-data "aws_iam_policy_document" "grafana_assume_role" {
-  statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
-
-    principals {
-      type        = "Federated"
-      identifiers = [module.eks.oidc_provider_arn]
-    }
-
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_provider_url}:sub"
-      values   = ["system:serviceaccount:${var.k8s_namespace}:grafana"]
-    }
-    condition {
-      test     = "StringEquals"
-      variable = "${local.oidc_provider_url}:aud"
-      values   = ["sts.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_iam_role" "grafana" {
-  name               = "${var.project_name}-grafana"
-  assume_role_policy = data.aws_iam_policy_document.grafana_assume_role.json
-}
-
-resource "aws_iam_policy" "grafana_secrets" {
-  name = "${var.project_name}-grafana-secrets"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["secretsmanager:GetSecretValue"]
-      Resource = [aws_secretsmanager_secret.grafana_admin_password.arn]
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "grafana" {
-  role       = aws_iam_role.grafana.name
-  policy_arn = aws_iam_policy.grafana_secrets.arn
+  role       = aws_iam_role.irsa[each.key].name
+  policy_arn = aws_iam_policy.irsa[each.key].arn
 }
 
 # --- EBS CSI Driver: needed for dynamic PVC provisioning (Prometheus storage) ---
