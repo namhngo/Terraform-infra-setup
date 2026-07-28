@@ -16,8 +16,14 @@ data "terraform_remote_state" "platform" {
 locals {
   platform = data.terraform_remote_state.platform.outputs
 
-  namespace  = local.platform.k8s_namespace
-  role_arns  = local.platform.iam_role_arns
+  namespace = local.platform.k8s_namespace
+  role_arns = local.platform.iam_role_arns
+
+  # Derived from platform's state, not from a variable here, so enabling TLS is a
+  # single change in one place. The catch is that it reflects platform's last
+  # *applied* state: setting domain_name in platform/terraform.tfvars without
+  # re-applying platform leaves this false, and the Ingresses come back HTTP-only
+  # with no error. `make apply` avoids it by always running platform first.
   enable_tls = local.platform.acm_certificate_arn != ""
 }
 

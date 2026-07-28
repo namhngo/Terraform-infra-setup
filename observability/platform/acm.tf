@@ -2,15 +2,16 @@
 # serve the stack over HTTPS.
 #
 # Without a domain there is no way to obtain a publicly trusted certificate, so
-# the stack falls back to plaintext HTTP. That is a genuine exposure — the
-# Grafana admin password and every telemetry payload cross the internet in the
-# clear — which is why var.domain_name carries a validation rule pointing here
-# rather than silently defaulting to something insecure.
+# the stack falls back to plaintext HTTP. That is a genuine exposure — the Grafana
+# admin password and every telemetry payload cross the internet in the clear — and
+# it is the default, so var.domain_name documents the consequence and
+# var.route53_zone_id has a validation rule requiring the two be set together.
 
 locals {
   enable_tls = var.domain_name != ""
 
-  # Both hostnames resolve to the same ALB; the ingresses route by path.
+  # One hostname serves the whole stack; the Ingresses split it by path, sending
+  # /v1/* to Alloy and everything else to Grafana.
   fqdn = local.enable_tls ? "${var.subdomain}.${var.domain_name}" : ""
 }
 
