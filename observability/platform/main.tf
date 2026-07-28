@@ -1,5 +1,16 @@
+# Platform stack — every AWS resource the observability stack needs, and nothing
+# that lives inside the cluster. It therefore configures only the aws provider.
+#
+# That is the whole point of the split. When the kubernetes and helm providers
+# were configured from module.eks outputs in this same root module, the provider
+# had to be initialised from a resource in its own state, which is what made both
+# apply and destroy fragile: Terraform could tear the cluster down while still
+# holding Kubernetes resources that needed it, and a destroy could leave the
+# provider pointing at a cluster that no longer existed. The in-cluster resources
+# now live in ../workloads, which reads this stack's outputs.
+
 terraform {
-  required_version = ">= 1.5.0"
+  required_version = ">= 1.11.0"
 
   required_providers {
     aws = {
@@ -10,48 +21,17 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.6"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.30"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 2.14"
-    }
-    null = {
-      source  = "hashicorp/null"
-      version = "~> 3.2"
-    }
   }
 }
 
 provider "aws" {
   region = var.aws_region
-}
 
-# Authenticates via `aws eks get-token` at plan/apply time rather than a
-# cached data-source token, which avoids "Unauthorized" errors on long
-# applies (EKS tokens expire after ~15 min).
-provider "kubernetes" {
-  host                   = module.eks.cluster_endpoint
-  cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-
-  exec {
-    api_version = "client.authentication.k8s.io/v1beta1"
-    command     = "aws"
-    args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--region", var.aws_region]
-  }
-}
-
-provider "helm" {
-  kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-
-    exec {
-      api_version = "client.authentication.k8s.io/v1beta1"
-      command     = "aws"
-      args        = ["eks", "get-token", "--cluster-name", module.eks.cluster_name, "--region", var.aws_region]
+  default_tags {
+    tags = {
+      Project   = var.project_name
+      ManagedBy = "terraform"
+      Stack     = "observability/platform"
     }
   }
 }

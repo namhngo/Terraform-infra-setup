@@ -10,6 +10,10 @@ variable "project_name" {
   default     = "obs-project"
 }
 
+# --- Retention ---
+# Enforced here as S3 lifecycle rules and exported for the Loki and Tempo
+# configs in the workloads stack, so both sides agree on one number.
+
 variable "loki_retention_days" {
   description = "Days to retain Loki log chunks in S3 before expiration"
   type        = number
@@ -80,7 +84,21 @@ variable "node_max_size" {
   default     = 3
 }
 
+variable "cluster_endpoint_public_access_cidrs" {
+  description = <<-EOT
+    CIDRs allowed to reach the EKS public API endpoint. Defaults to open, which
+    is what the AWS module does too, but it means anyone on the internet can
+    attempt to authenticate against your control plane. Set this to your own
+    address (e.g. ["203.0.113.4/32"]) — `curl -s https://checkip.amazonaws.com`
+    prints it.
+  EOT
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
 # --- Kubernetes ---
+# Needed here because the IRSA trust policies in iam.tf are scoped to specific
+# namespace/ServiceAccount pairs.
 
 variable "k8s_namespace" {
   description = "Kubernetes namespace for all observability resources"
@@ -88,8 +106,32 @@ variable "k8s_namespace" {
   default     = "monitoring"
 }
 
-variable "prometheus_storage_gb" {
-  description = "Size of the Prometheus PVC in GiB"
-  type        = number
-  default     = 50
+# --- TLS ---
+
+variable "domain_name" {
+  description = <<-EOT
+    Route53-hosted domain used to issue an ACM certificate, enabling HTTPS on the
+    ALB. Leave empty to serve plaintext HTTP, in which case the Grafana admin
+    password and all telemetry cross the internet unencrypted — acceptable only
+    for a short-lived throwaway environment.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "subdomain" {
+  description = "Hostname prefix within domain_name for the observability endpoint"
+  type        = string
+  default     = "observability"
+}
+
+variable "route53_zone_id" {
+  description = "Route53 hosted zone ID for domain_name; required when domain_name is set"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.domain_name == "" || var.route53_zone_id != ""
+    error_message = "route53_zone_id must be set when domain_name is set, so the ACM certificate can be DNS-validated."
+  }
 }

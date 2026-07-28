@@ -22,10 +22,6 @@ module "vpc" {
   private_subnet_tags = {
     "kubernetes.io/role/internal-elb" = "1"
   }
-
-  tags = {
-    Project = var.project_name
-  }
 }
 
 # EKS cluster + managed node group.
@@ -39,9 +35,11 @@ module "eks" {
   vpc_id     = module.vpc.vpc_id
   subnet_ids = module.vpc.private_subnets
 
-  # Public access simplifies kubectl access for a personal-account learning
-  # project. Restrict cluster_endpoint_public_access_cidrs for tighter security.
-  cluster_endpoint_public_access = true
+  # Public endpoint access keeps kubectl usable from a laptop without a bastion
+  # or VPN. Narrow the CIDR list to your own address rather than leaving the
+  # control plane reachable from the whole internet — see the variable.
+  cluster_endpoint_public_access       = true
+  cluster_endpoint_public_access_cidrs = var.cluster_endpoint_public_access_cidrs
 
   # Grants the IAM identity running `terraform apply` cluster-admin via an
   # EKS Access Entry. Without this, the module (v20+) does NOT auto-grant
@@ -68,9 +66,5 @@ module "eks" {
     aws-ebs-csi-driver = {
       service_account_role_arn = aws_iam_role.ebs_csi.arn
     }
-  }
-
-  tags = {
-    Project = var.project_name
   }
 }

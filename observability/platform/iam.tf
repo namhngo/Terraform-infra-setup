@@ -234,3 +234,25 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
   role       = aws_iam_role.ebs_csi.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
+
+# --- AWS Load Balancer Controller ---
+# The Helm release and ServiceAccount live in the workloads stack; only the IAM
+# role belongs here. Uses the community submodule because the AWS-published
+# policy has ~20 statements and changes with new ALB features, unlike the simple
+# hand-written roles above.
+
+module "lb_controller_irsa" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role-for-service-accounts-eks"
+  version = "~> 5.0"
+
+  role_name = "${var.project_name}-lb-controller"
+
+  attach_load_balancer_controller_policy = true
+
+  oidc_providers = {
+    main = {
+      provider_arn               = module.eks.oidc_provider_arn
+      namespace_service_accounts = ["kube-system:aws-load-balancer-controller"]
+    }
+  }
+}
