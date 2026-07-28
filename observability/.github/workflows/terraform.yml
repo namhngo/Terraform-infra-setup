@@ -1,0 +1,59 @@
+# CI for the observability project. Lives inside the project so it travels with
+# it when this folder is split into its own repository — at which point this
+# path becomes the repo-root .github/workflows and GitHub runs it automatically.
+#
+# Two stacks (platform, workloads) so validate and tflint run as a matrix over
+# both. validate uses -backend=false so CI needs no AWS credentials and never
+# touches real state; plan/apply stays manual (see README).
+
+name: terraform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # Both stacks require >= 1.9 (a variable-referencing validation block).
+  TF_VERSION: "1.9.8"
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: fmt
+        run: terraform fmt -check -recursive
+
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [platform, workloads]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: init (no backend)
+        working-directory: ${{ matrix.dir }}
+        run: terraform init -backend=false -input=false
+
+      - name: validate
+        working-directory: ${{ matrix.dir }}
+        run: terraform validate
+
+      - uses: terraform-linters/setup-tflint@v4
+
+      - name: tflint
+        working-directory: ${{ matrix.dir }}
+        run: tflint

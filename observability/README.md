@@ -177,6 +177,7 @@ can be moved into its own repository as-is.
 observability/
 ├── README.md                # ← you are here
 ├── Makefile                 # Ordered apply/destroy across the stacks below
+├── .github/workflows/       # fmt + validate + tflint (runs once this is its own repo)
 ├── platform/                # AWS only — no kubernetes/helm provider
 │   ├── main.tf              # terraform block + aws provider + default_tags
 │   ├── eks.tf               # VPC + EKS cluster + managed node group
@@ -396,10 +397,13 @@ aws secretsmanager delete-secret --secret-id /obs-project/grafana-admin-password
   and `tempo` Helm charts already package and maintain. Migrating would cut the
   code substantially and bring upstream's upgrade paths and defaults. It is the
   largest remaining piece of non-idiomatic work in this repo.
-- **CI runs `fmt -check` and `validate` only.** A GitHub Actions workflow
-  (`.github/workflows/terraform.yml`, repo root) checks formatting and validates
-  all three root modules on every push and PR. A security/lint pass — `tflint` or
-  `checkov` — is the remaining addition.
+- **CI runs `fmt`, `validate` and `tflint`.** The workflow lives inside the
+  project at `.github/workflows/terraform.yml`, so it travels with this folder if
+  it's split into its own repo — at which point GitHub runs it automatically.
+  While nested in the parent monorepo it does *not* run (GitHub only executes
+  workflows from the repository root); the checks are still runnable locally and
+  via `make validate`. A deeper security scan (`checkov`/`trivy`) is the
+  remaining addition.
 - **Single replica per component.** Fine for a side project; not highly available.
 
 ## What's Customizable

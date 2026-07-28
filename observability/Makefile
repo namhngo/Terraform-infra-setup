@@ -20,7 +20,7 @@ ifeq ($(AUTO_APPROVE),1)
   APPROVE := -auto-approve -input=false
 endif
 
-.PHONY: help init plan apply destroy fmt validate clean output
+.PHONY: help init plan apply destroy fmt validate lint clean output
 
 help:
 	@echo "Usage:"
@@ -33,6 +33,7 @@ help:
 	@echo "Checks:"
 	@echo "  make fmt          Rewrite both stacks to canonical format"
 	@echo "  make validate     Validate both stacks"
+	@echo "  make lint         Run tflint over both stacks"
 	@echo ""
 	@echo "Add AUTO_APPROVE=1 to skip confirmation prompts."
 
@@ -76,6 +77,12 @@ validate:
 	@for stack in $(STACKS); do \
 	  echo "==> validate $$stack"; \
 	  ( cd $$stack && terraform init -backend=false -input=false >/dev/null && terraform validate ) || exit 1; \
+	done
+
+lint:
+	@for stack in $(STACKS); do \
+	  echo "==> tflint $$stack"; \
+	  ( cd $$stack && tflint ) || exit 1; \
 	done
 
 clean:
