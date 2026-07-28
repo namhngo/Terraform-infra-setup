@@ -24,6 +24,12 @@ STATE_BUCKET  = $(PROJECT_NAME)-tfstate-$(ACCOUNT_ID)
 # backend block. It is supplied here instead.
 TF_INIT = terraform init -reconfigure -backend-config="bucket=$(STATE_BUCKET)"
 
+# AUTO_APPROVE=1 skips the interactive confirmation, for CI or an unattended
+# rebuild. Off by default so that `make destroy` still asks first.
+ifeq ($(AUTO_APPROVE),1)
+  APPROVE := -auto-approve -input=false
+endif
+
 .PHONY: help bootstrap init plan apply destroy fmt validate clean output
 
 help:
@@ -44,7 +50,7 @@ help:
 	@echo "State bucket: $(STATE_BUCKET)"
 
 bootstrap:
-	cd $(BOOTSTRAP) && terraform init && terraform apply
+	cd $(BOOTSTRAP) && terraform init && terraform apply $(APPROVE)
 	@echo
 	@echo "State bucket ready. Run 'make init' next."
 
@@ -64,9 +70,9 @@ plan:
 # outputs and looks the cluster up by name, so the cluster has to exist first.
 apply:
 	@echo "==> apply $(PLATFORM)"
-	cd $(PLATFORM) && terraform apply
+	cd $(PLATFORM) && terraform apply $(APPROVE)
 	@echo "==> apply $(WORKLOADS)"
-	cd $(WORKLOADS) && terraform apply
+	cd $(WORKLOADS) && terraform apply $(APPROVE)
 	@$(MAKE) --no-print-directory output
 
 # Reverse order. Destroying workloads first lets the load balancer controller
@@ -74,9 +80,9 @@ apply:
 # running, which is the entire reason the stacks are split.
 destroy:
 	@echo "==> destroy $(WORKLOADS)"
-	cd $(WORKLOADS) && terraform destroy
+	cd $(WORKLOADS) && terraform destroy $(APPROVE)
 	@echo "==> destroy $(PLATFORM)"
-	cd $(PLATFORM) && terraform destroy
+	cd $(PLATFORM) && terraform destroy $(APPROVE)
 
 output:
 	@cd $(WORKLOADS) && terraform output
