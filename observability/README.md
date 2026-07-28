@@ -127,13 +127,14 @@ have to remember.
 | Resource | Kind | Replicas |
 |---|---|---|
 | `monitoring` | Namespace | — |
-| `alloy-config`, `loki-config`, `tempo-config`, `prometheus-config` | ConfigMap | — |
+| `alloy-config`, `prometheus-config` | ConfigMap | — |
 | `grafana-datasources`, `grafana-dashboards-config`, `grafana-dashboard-json` | ConfigMap | — |
 | `alloy-auth`, `grafana-auth` | Secret | — |
 | `loki`, `tempo`, `alloy`, `grafana`, `prometheus` | ServiceAccount (IRSA) | — |
-| `alloy`, `loki`, `tempo`, `prometheus`, `grafana` | Deployment | 1 |
-| `alloy`, `loki`, `tempo`, `prometheus`, `grafana` | Service (ClusterIP) | — |
-| `prometheus-data` | PersistentVolumeClaim (50Gi) | — |
+| `alloy`, `prometheus`, `grafana` | Deployment | 1 |
+| `loki`, `tempo` | Helm release (StatefulSet) | 1 |
+| `alloy`, `prometheus`, `grafana` | Service (ClusterIP) | — |
+| `prometheus-data` (50Gi), `loki` (10Gi, chart-managed) | PersistentVolumeClaim | — |
 | `gp3` | StorageClass | — |
 | `alloy`, `grafana` | Ingress (shared ALB) | — |
 | `aws-load-balancer-controller` | Helm Release | 2 pods |
@@ -147,12 +148,13 @@ deploy to EKS, Docker Compose, or any other orchestrator.
 | File | Owned by | Purpose |
 |---|---|---|
 | `configs/alloy/config.alloy` | Alloy | OTLP receiver → routes logs/traces/metrics to Loki/Tempo/Prometheus |
-| `configs/loki/loki.yml.tpl` | Loki | S3 backend, retention, schema config |
-| `configs/tempo/tempo.yml.tpl` | Tempo | S3 backend, retention, span metrics generator |
 | `configs/prometheus/prometheus.yml` | Prometheus | Scrape config, remote write receiver |
 | `configs/grafana/datasources.yml` | Grafana | Loki + Tempo + Prometheus datasources with cross-linking |
 | `configs/grafana/dashboards.yml` | Grafana | Dashboard auto-provisioning config |
 | `configs/grafana/overview-dashboard.json` | Grafana | A sample dashboard to get started |
+
+> Loki and Tempo have no config files here — their configuration is rendered by
+> their Helm charts from values in `helm.tf`.
 
 ## Data Flow
 
@@ -192,13 +194,14 @@ observability/
     ├── main.tf              # Providers, from an EKS data source
     ├── remote-state.tf      # Reads platform's state file + secret values
     ├── kubernetes.tf        # Namespace, ConfigMaps, Secrets, ServiceAccounts
-    ├── workloads.tf         # StorageClass, PVC, Deployments, Services
+    ├── workloads.tf         # StorageClass, PVC, Deployments, Services (Alloy/Grafana/Prometheus)
+    ├── helm.tf              # Loki + Tempo via upstream Grafana charts
     ├── lb-controller.tf     # AWS Load Balancer Controller (Helm)
     ├── ingress.tf           # Shared-ALB Ingresses
     ├── dns.tf               # Route53 alias record (when TLS enabled)
     ├── variables.tf
     ├── outputs.tf
-    └── configs/             # Service configs → mounted as ConfigMaps
+    └── configs/             # Alloy / Prometheus / Grafana configs → ConfigMaps
 ```
 
 ## Prerequisites
@@ -392,11 +395,14 @@ aws secretsmanager delete-secret --secret-id /obs-project/grafana-admin-password
 
 ## Known gaps
 
-- **The workloads are hand-rolled.** `workloads.tf` is ~550 lines of
-  `kubernetes_deployment` reimplementing what the `kube-prometheus-stack`, `loki`
-  and `tempo` Helm charts already package and maintain. Migrating would cut the
-  code substantially and bring upstream's upgrade paths and defaults. It is the
-  largest remaining piece of non-idiomatic work in this repo.
+- **Loki and Tempo run from upstream charts; Alloy/Grafana/Prometheus are
+  hand-rolled by choice.** The two storage backends — whose on-disk config is
+  fiddly and version-sensitive — use the `grafana/loki` and `grafana/tempo`
+  charts (`helm.tf`). The other three stay as plain `kubernetes_*` resources:
+  they're simple, and charting them would only churn service names/ports and
+  force ingress/config rewiring for no functional gain. (The single-binary
+  `grafana/tempo` chart is deprecated upstream in favour of `tempo-distributed`,
+  which is many-component overkill for one binary — noted in `helm.tf`.)
 - **CI runs `fmt`, `validate` and `tflint`.** The workflow lives inside the
   project at `.github/workflows/terraform.yml`, so it travels with this folder if
   it's split into its own repo — at which point GitHub runs it automatically.

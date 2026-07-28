@@ -6,6 +6,8 @@ resource "kubernetes_namespace" "monitoring" {
 }
 
 # --- ConfigMaps ---
+# Loki and Tempo render their own config via their Helm charts (see helm.tf),
+# so only Alloy, Prometheus and Grafana have hand-managed ConfigMaps here.
 
 resource "kubernetes_config_map" "alloy_config" {
   metadata {
@@ -15,36 +17,6 @@ resource "kubernetes_config_map" "alloy_config" {
 
   data = {
     "config.alloy" = file("${path.module}/configs/alloy/config.alloy")
-  }
-}
-
-resource "kubernetes_config_map" "loki_config" {
-  metadata {
-    name      = "loki-config"
-    namespace = kubernetes_namespace.monitoring.metadata[0].name
-  }
-
-  data = {
-    "loki.yml" = templatefile("${path.module}/configs/loki/loki.yml.tpl", {
-      bucket_name     = local.platform.loki_bucket
-      region          = local.platform.aws_region
-      retention_hours = local.platform.loki_retention_hours
-    })
-  }
-}
-
-resource "kubernetes_config_map" "tempo_config" {
-  metadata {
-    name      = "tempo-config"
-    namespace = kubernetes_namespace.monitoring.metadata[0].name
-  }
-
-  data = {
-    "tempo.yml" = templatefile("${path.module}/configs/tempo/tempo.yml.tpl", {
-      bucket_name     = local.platform.tempo_bucket
-      region          = local.platform.aws_region
-      retention_hours = local.platform.tempo_retention_hours
-    })
   }
 }
 
