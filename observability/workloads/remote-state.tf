@@ -1,17 +1,15 @@
 # Reads the platform stack's outputs. Everything AWS-side — bucket names, IRSA
 # role ARNs, the WAF ACL, the certificate — is owned there and consumed here, so
 # neither stack duplicates the other's resources.
-
-data "aws_caller_identity" "current" {}
+#
+# Both stacks keep state locally, so this reads the sibling state file directly.
+# It does mean `platform` has to be applied first, which the Makefile enforces.
 
 data "terraform_remote_state" "platform" {
-  backend = "s3"
+  backend = "local"
 
   config = {
-    # Same derivation as bootstrap/main.tf and the Makefile.
-    bucket = "${var.project_name}-tfstate-${data.aws_caller_identity.current.account_id}"
-    key    = "observability/platform.tfstate"
-    region = var.aws_region
+    path = "${path.module}/../platform/terraform.tfstate"
   }
 }
 

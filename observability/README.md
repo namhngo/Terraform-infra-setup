@@ -71,14 +71,17 @@ Terraform never sees, which is what drives the two-stack layout below.
 
 ## Stack layout
 
-The infrastructure is split into two Terraform stacks with separate state, plus a
-one-time bootstrap stack.
+The infrastructure is split into two Terraform stacks with separate state.
 
 | Stack | Owns | Providers |
 |---|---|---|
-| `bootstrap/` | S3 bucket holding this project's remote state | `aws` |
 | `platform/` | VPC, EKS, IAM, S3 data buckets, Secrets Manager, WAF, ACM | `aws` |
 | `workloads/` | Namespace, ConfigMaps, Deployments, Services, PVC, Ingress, LB Controller | `kubernetes`, `helm`, `aws` |
+
+Both keep state locally. This stack is a monitoring environment that gets stood up
+and torn down between sessions by one person, so there is no team to lock against
+and nothing worth keeping a version history of. `workloads/` reads `platform/`'s
+outputs straight out of its sibling state file.
 
 **This split is the point, not an organisational preference.** Two concrete
 problems come from putting them together:
@@ -174,12 +177,7 @@ can be moved into its own repository as-is.
 observability/
 ├── README.md                # ← you are here
 ├── Makefile                 # Ordered apply/destroy across the stacks below
-├── bootstrap/               # One-time: S3 bucket for this project's state
-│   ├── main.tf
-│   ├── variables.tf
-│   └── outputs.tf
 ├── platform/                # AWS only — no kubernetes/helm provider
-│   ├── backend.tf           # S3 remote state (bucket supplied at init)
 │   ├── main.tf              # terraform block + aws provider + default_tags
 │   ├── eks.tf               # VPC + EKS cluster + managed node group
 │   ├── iam.tf               # IRSA roles
@@ -190,9 +188,8 @@ observability/
 │   ├── variables.tf
 │   └── outputs.tf           # Contract consumed by workloads/
 └── workloads/               # Everything in-cluster
-    ├── backend.tf
     ├── main.tf              # Providers, from an EKS data source
-    ├── remote-state.tf      # Reads platform outputs + secret values
+    ├── remote-state.tf      # Reads platform's state file + secret values
     ├── kubernetes.tf        # Namespace, ConfigMaps, Secrets, ServiceAccounts
     ├── workloads.tf         # StorageClass, PVC, Deployments, Services
     ├── lb-controller.tf     # AWS Load Balancer Controller (Helm)
@@ -207,13 +204,13 @@ observability/
 
 | Tool | Version | Check |
 |---|---|---|
-| Terraform | >= 1.11 | `terraform --version` |
+| Terraform | >= 1.9 | `terraform --version` |
 | AWS CLI | v2 | `aws --version` |
 | kubectl | >= 1.30 | `kubectl version --client` |
 | Helm | >= 3.0 | `helm version` |
 
-Terraform 1.11 is required for S3-native state locking (`use_lockfile`), which
-replaces the DynamoDB lock table older setups needed.
+Terraform 1.9 is required because `route53_zone_id`'s validation block references
+another variable, which older versions reject.
 
 Your AWS credentials need permissions for EKS, EC2, VPC, IAM, S3, Secrets
 Manager, WAF, ACM and Route53. Full admin on a personal account is fine.
@@ -223,10 +220,6 @@ Manager, WAF, ACM and Route53. Full admin on a personal account is fine.
 From this directory (`observability/`):
 
 ```bash
-# Once per AWS account — creates the remote state bucket
-make bootstrap
-
-# Initialise both stacks against that bucket
 make init
 
 # Apply platform (~25 min, mostly EKS), then workloads (~5 min)
@@ -325,9 +318,11 @@ Then check Grafana → Explore:
   paths are unaffected.
 - **Grafana** has its own login; its paths aren't behind the WAF token rule.
 - **TLS is opt-in** via `domain_name`. Leaving it unset means plaintext HTTP.
-- **State contains secrets.** The generated token and password are stored in
-  plaintext in state, which is why the bootstrap bucket is encrypted, versioned,
-  private, and denies non-TLS requests.
+- **State contains secrets.** The generated token and password are written to the
+  local state files in plaintext. `.gitignore` keeps them out of git, but they sit
+  unencrypted on disk — worth knowing before running this anywhere shared. Moving
+  to an encrypted S3 backend would be the fix if this ever stops being a
+  throwaway environment.
 
 ## Cleanup
 
@@ -376,8 +371,7 @@ aws secretsmanager delete-secret --secret-id /obs-project/grafana-admin-password
   --force-delete-without-recovery
 ```
 
-The state bucket is deliberately left out of `make destroy`; it has no
-`force_destroy` and outlives the infrastructure.
+`make destroy` leaves nothing behind in AWS — verified by audit, see above.
 
 ## Cost
 

@@ -10,67 +10,46 @@
 SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
-PROJECT_NAME ?= obs-project
-AWS_REGION   ?= us-east-1
-
-BOOTSTRAP := bootstrap
 PLATFORM  := platform
 WORKLOADS := workloads
 STACKS    := $(PLATFORM) $(WORKLOADS)
 
-# Resolved lazily so that targets which do not touch AWS (help, fmt) work
-# without credentials.
-ACCOUNT_ID    = $(shell aws sts get-caller-identity --query Account --output text)
-STATE_BUCKET  = $(PROJECT_NAME)-tfstate-$(ACCOUNT_ID)
-
-# The state bucket name embeds the account ID, so it cannot be written into a
-# backend block. It is supplied here instead.
-TF_INIT = terraform init -reconfigure -backend-config="bucket=$(STATE_BUCKET)"
-
 # AUTO_APPROVE=1 skips the interactive confirmation, for CI or an unattended
-# rebuild. Off by default so that `make destroy` still asks first.
+# rebuild. Off by default so `make destroy` still asks first.
 ifeq ($(AUTO_APPROVE),1)
   APPROVE := -auto-approve -input=false
 endif
 
-.PHONY: help bootstrap init plan apply destroy fmt validate clean output
+.PHONY: help init plan apply destroy fmt validate clean output
 
 help:
-	@echo "Setup (once per account):"
-	@echo "  make bootstrap    Create the S3 bucket that stores remote state"
-	@echo ""
-	@echo "Normal use:"
-	@echo "  make init         Initialise both stacks against the state bucket"
+	@echo "Usage:"
+	@echo "  make init         Initialise both stacks"
 	@echo "  make plan         Plan both stacks"
 	@echo "  make apply        Apply platform, then workloads"
 	@echo "  make destroy      Destroy workloads, then platform (order matters)"
 	@echo "  make output       Show the endpoint and credential-retrieval commands"
 	@echo ""
 	@echo "Checks:"
-	@echo "  make fmt          Rewrite all stacks to canonical format"
-	@echo "  make validate     Validate all stacks"
+	@echo "  make fmt          Rewrite both stacks to canonical format"
+	@echo "  make validate     Validate both stacks"
 	@echo ""
-	@echo "State bucket: $(STATE_BUCKET)"
-
-bootstrap:
-	cd $(BOOTSTRAP) && terraform init && terraform apply $(APPROVE)
-	@echo
-	@echo "State bucket ready. Run 'make init' next."
+	@echo "Add AUTO_APPROVE=1 to skip confirmation prompts."
 
 init:
 	@for stack in $(STACKS); do \
 	  echo "==> init $$stack"; \
-	  ( cd $$stack && $(TF_INIT) ) || exit 1; \
+	  ( cd $$stack && terraform init ) || exit 1; \
 	done
 
+# Only platform can be planned from scratch. The workloads plan reads platform's
+# state file and looks the cluster up by name, so it needs platform applied first.
 plan:
-	@for stack in $(STACKS); do \
-	  echo "==> plan $$stack"; \
-	  ( cd $$stack && terraform plan ) || exit 1; \
-	done
+	@echo "==> plan $(PLATFORM)"
+	cd $(PLATFORM) && terraform plan
 
-# Sequential, not parallel: the workloads stack reads the platform stack's
-# outputs and looks the cluster up by name, so the cluster has to exist first.
+# Sequential, not parallel: workloads reads platform's outputs from its state
+# file and looks the cluster up by name, so the cluster has to exist first.
 apply:
 	@echo "==> apply $(PLATFORM)"
 	cd $(PLATFORM) && terraform apply $(APPROVE)
@@ -94,7 +73,7 @@ fmt:
 	terraform fmt -recursive
 
 validate:
-	@for stack in $(BOOTSTRAP) $(STACKS); do \
+	@for stack in $(STACKS); do \
 	  echo "==> validate $$stack"; \
 	  ( cd $$stack && terraform init -backend=false -input=false >/dev/null && terraform validate ) || exit 1; \
 	done
