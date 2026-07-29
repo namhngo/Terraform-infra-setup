@@ -14,45 +14,56 @@ test data instead.
 
 ```mermaid
 flowchart LR
-    Client(["OTLP Client\ntelemetrygen / curl"]):::external
-    WAF["WAF\nbearer token, rate limit"]:::edge
-    ALB{{"ALB\n:443 / :80"}}:::edge
+    Client(["Your App\nOTLP / telemetrygen"]):::ext
 
+    WAF{{"WAF"}}:::edge
+    ALB{{"ALB :80"}}:::edge
     Client --> WAF --> ALB
 
-    subgraph eks["EKS · monitoring namespace"]
+    subgraph EKS["EKS Cluster · monitoring namespace"]
+        direction LR
         Alloy["Alloy\ncollector"]:::compute
         Loki["Loki\nlogs"]:::compute
         Tempo["Tempo\ntraces"]:::compute
         Prom["Prometheus\nmetrics"]:::compute
         Graf["Grafana\ndashboards"]:::compute
-
         Alloy --> Loki & Tempo & Prom
         Loki & Tempo & Prom --> Graf
     end
 
-    ALB -->|/v1/*| Alloy
-    ALB -->|/| Graf
+    ALB -- "/v1/* (telemetry)" --> Alloy
+    ALB -- "/* (dashboards)" --> Graf
 
-    subgraph aws["AWS Managed (via IRSA)"]
-        S3L[("S3\nloki bucket")]:::storage
-        S3T[("S3\ntempo bucket")]:::storage
-        Secrets[("Secrets\nManager")]:::storage
+    subgraph infra["Infrastructure"]
+        Nodes(["2x t3.medium node group"]):::net
+        NAT["NAT Gateway"]:::net
+        VPC["VPC 10.0.0.0/16\npublic + private subnets"]:::net
     end
 
-    Loki -.-> S3L
-    Tempo -.-> S3T
-    Alloy -.-> Secrets
-    Graf -.-> Secrets
+    subgraph store["Durable Storage"]
+        S3L[("S3\nloki bucket")]:::storage
+        S3T[("S3\ntempo bucket")]:::storage
+        SM[("Secrets\nManager")]:::storage
+        PVC[("EBS PVC\nprometheus")]:::storage
+    end
 
-    classDef external fill:#f5f5f5,stroke:#999999,color:#333333
-    classDef edge fill:#fff3cd,stroke:#cc9a06,color:#333333
-    classDef compute fill:#d4e6f1,stroke:#2874a6,color:#333333
-    classDef storage fill:#d5f5e3,stroke:#1e8449,color:#333333
+    Loki -.IRSA.-> S3L
+    Tempo -.IRSA.-> S3T
+    Alloy -.IRSA.-> SM
+    Graf -.IRSA.-> SM
+    Prom --> PVC
+
+    classDef ext fill:#f5f5f5,stroke:#999,color:#333
+    classDef edge fill:#fff3cd,stroke:#cc9a06,color:#333
+    classDef compute fill:#d4e6f1,stroke:#2874a6,color:#333
+    classDef net fill:#fadbd8,stroke:#c0392b,color:#333
+    classDef storage fill:#d5f5e3,stroke:#1e8449,color:#333
 ```
 
-> The node group, VPC subnets and NAT gateway are omitted from the diagram for
-> readability — see [What Gets Created](#what-gets-created) for the full list.
+The diagram shows everything in one picture — the data path (left to right across
+the top) and the infrastructure underneath. **Solid arrows** are live traffic;
+**dotted IRSA arrows** are pod-level IAM permissions to AWS services; Prometheus
+writes directly to its **EBS PVC** rather than going through an AWS API.
 
 ### Why there is an ALB
 
