@@ -324,66 +324,65 @@ route53_zone_id = "Z0123456789ABCDEFGHIJ"
 cluster_endpoint_public_access_cidrs = ["203.0.113.4/32"]
 ```
 
-## Post-Deployment
 
-```bash
-make output
-```
+## Testing
 
 ```bash
 # Point kubectl at the cluster
 aws eks update-kubeconfig --name obs-project-cluster --region us-east-1
 
-# Confirm the shared ALB came up — both Ingresses show the same address
-kubectl -n monitoring get ingress
-
-# Grafana admin password
-aws secretsmanager get-secret-value \
-  --secret-id /obs-project/grafana-admin-password \
-  --query SecretString --output text
+# Confirm all 5 pods came up healthy
+kubectl -n monitoring get pods
 ```
 
-## Validating the Pipeline
-
-No sample app is needed — validate with standard OTel tooling. The ingest paths
-require the bearer token; without it WAF returns 403.
+Grab the endpoint and token once to avoid typing them repeatedly:
 
 ```bash
-export OTLP_HOST=<endpoint from make output>
-export OTLP_TOKEN=$(aws secretsmanager get-secret-value \
+ENDPOINT=$(cd workloads && terraform output -raw endpoint | sed 's|https\?://||')
+TOKEN=$(aws secretsmanager get-secret-value \
   --secret-id /obs-project/alloy-bearer-token \
   --query SecretString --output text)
 ```
 
-**Option A — `telemetrygen`** (official OpenTelemetry load generator):
+### Grafana
 
 ```bash
-go install github.com/open-telemetry/opentelemetry-collector-contrib/cmd/telemetrygen@latest
+# Grafana should respond
+curl -o /dev/null -w "%{http_code}\n" "http://${ENDPOINT}/api/health"
+# Expect: 200
 
-telemetrygen traces \
-  --otlp-endpoint "$OTLP_HOST:443" \
-  --otlp-header "Authorization=\"Bearer $OTLP_TOKEN\"" \
-  --duration 30s
+# Get the admin password
+aws secretsmanager get-secret-value \
+  --secret-id /obs-project/grafana-admin-password \
+  --query SecretString --output text
+
+open "http://${ENDPOINT}"
+# Login: admin / <password from above>
 ```
 
-**Option B — plain `curl`** (OTLP/HTTP JSON):
+### Telemetry ingest (WAF-gated)
 
 ```bash
-curl -X POST "https://$OTLP_HOST/v1/traces" \
-  -H "Authorization: Bearer $OTLP_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"resourceSpans":[]}'
-
-# Expect 403 without the header
-curl -o /dev/null -w '%{http_code}\n' -X POST "https://$OTLP_HOST/v1/traces" \
+# WAF blocks unauthenticated telemetry
+curl -o /dev/null -w "%{http_code}\n" \
+  -X POST "http://${ENDPOINT}/v1/traces" \
   -H "Content-Type: application/json" -d '{"resourceSpans":[]}'
+# Expect: 403
+
+# With the bearer token, telemetry is accepted
+curl -o /dev/null -w "%{http_code}\n" \
+  -X POST "http://${ENDPOINT}/v1/traces" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -d '{"resourceSpans":[]}'
+# Expect: 200
 ```
 
 Then check Grafana → Explore:
+- **Loki**: query `{service_name=~".+"}` — data should appear within seconds
+- **Tempo**: search recent traces
+- **Prometheus**: query `up`
 
-- **Loki**: query `{service_name=~".+"}` — logs should appear within seconds
-- **Tempo**: search recent traces — spans should appear
-- **Prometheus**: query `up` or any `otelcol_*` metric — collector health metrics
 
 ## Security notes
 
