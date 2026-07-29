@@ -78,6 +78,15 @@ permissions at all — it doesn't need any.
 that must survive pod restarts. Without it, every restart wipes all metrics
 history. This is provisioned as a Kubernetes PVC backed by an AWS EBS volume.
 
+**Why EBS and not S3?** Prometheus opens files, seeks around inside them, and
+writes a few bytes at a time to write-ahead logs — these are POSIX filesystem
+operations that S3 can't do (S3 works like a file cabinet: you put whole
+objects in and pull whole objects out). Loki and Tempo *can* use S3 because
+they only write complete, immutable blocks. Prometheus needs a real filesystem,
+so it gets a virtual hard drive (EBS) mounted into its pod. The S3-compatible
+alternative is Grafana Mimir, but it's multiple services and overkill for a
+single-node stack.
+
 **VPC** = a private network that isolates everything. Public subnets hold only
 the ALB — the single door from the internet. Private subnets hold everything
 else — the worker nodes, all pods, and the NAT Gateway. Nothing in the private
