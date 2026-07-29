@@ -14,43 +14,45 @@ test data instead.
 
 ```mermaid
 flowchart LR
-    Client(["Your App\nOTLP / telemetrygen"]):::ext
+    Client(["Your App\nsends OTLP data"]):::ext
 
     WAF{{"WAF"}}:::edge
     ALB{{"ALB :80"}}:::edge
     Client --> WAF --> ALB
 
-    subgraph EKS["EKS Cluster · monitoring namespace"]
-        direction LR
-        Alloy["Alloy\ncollector"]:::compute
-        Loki["Loki\nlogs"]:::compute
-        Tempo["Tempo\ntraces"]:::compute
-        Prom["Prometheus\nmetrics"]:::compute
-        Graf["Grafana\ndashboards"]:::compute
-        Alloy --> Loki & Tempo & Prom
-        Loki & Tempo & Prom --> Graf
+    subgraph VPC["VPC · private network · 10.0.0.0/16"]
+        subgraph private["private subnets (no internet access)"]
+            NAT["NAT Gateway\npods reach AWS APIs + pull images"]:::net
+
+            subgraph EKS["EKS · monitoring namespace"]
+                direction LR
+                Alloy["Alloy\ncollector"]:::compute
+                Loki["Loki\nlog storage"]:::compute
+                Tempo["Tempo\ntrace storage"]:::compute
+                Prom["Prometheus\nmetrics (15d TSDB)"]:::compute
+                Graf["Grafana\ndashboards"]:::compute
+                Alloy --> Loki & Tempo & Prom
+                Loki & Tempo & Prom --> Graf
+            end
+
+            Nodes(["2x t3.medium · worker nodes\npods run here"]):::net
+        end
     end
 
-    ALB -- "/v1/* (telemetry)" --> Alloy
-    ALB -- "/* (dashboards)" --> Graf
+    ALB -- "telemetry /v1/*" --> Alloy
+    ALB -- "dashboards /*" --> Graf
 
-    subgraph infra["Infrastructure"]
-        Nodes(["2x t3.medium node group"]):::net
-        NAT["NAT Gateway"]:::net
-        VPC["VPC 10.0.0.0/16\npublic + private subnets"]:::net
+    subgraph store["Durable Storage (outside the cluster)"]
+        S3L[("S3\nLoki writes logs here\n90-day retention")]:::storage
+        S3T[("S3\nTempo writes traces here\n30-day retention")]:::storage
+        SM[("Secrets Manager\nbearer token\n+ grafana password")]:::storage
+        PVC[("EBS disk · 50Gi\nPrometheus stores metrics here\nsurvives pod restarts")]:::storage
     end
 
-    subgraph store["Durable Storage"]
-        S3L[("S3\nloki bucket")]:::storage
-        S3T[("S3\ntempo bucket")]:::storage
-        SM[("Secrets\nManager")]:::storage
-        PVC[("EBS PVC\nprometheus")]:::storage
-    end
-
-    Loki -.IRSA.-> S3L
-    Tempo -.IRSA.-> S3T
-    Alloy -.IRSA.-> SM
-    Graf -.IRSA.-> SM
+    Loki -.-> S3L
+    Tempo -.-> S3T
+    Alloy -.-> SM
+    Graf -.-> SM
     Prom --> PVC
 
     classDef ext fill:#f5f5f5,stroke:#999,color:#333
@@ -60,25 +62,45 @@ flowchart LR
     classDef storage fill:#d5f5e3,stroke:#1e8449,color:#333
 ```
 
-The diagram shows everything in one picture — the data path (left to right across
-the top) and the infrastructure underneath. **Solid arrows** are live traffic;
-**dotted IRSA arrows** are pod-level IAM permissions to AWS services; Prometheus
-writes directly to its **EBS PVC** rather than going through an AWS API.
+### How to read this diagram
 
-### Why there is an ALB
+**Solid arrows** = your app's telemetry data flowing through the stack in real time.
+Your app sends OTLP → WAF validates it → ALB routes it → Alloy fans it out →
+Loki/Tempo/Prometheus store it → Grafana reads it all back for dashboards.
 
-The stack only *runs* Alloy, Loki, Tempo, Prometheus and Grafana, but those pods
-have private, ephemeral IPs. Two things need to reach them from outside the
-cluster: you, opening Grafana, and your applications, pushing OTLP telemetry to
-Alloy. The ALB is that entrypoint — it isn't a component of the observability
-stack, it's the door into it.
+**Dotted arrows** = IRSA (IAM Roles for Service Accounts). Each Kubernetes pod
+gets its own AWS IAM role, scoped to exactly what it needs. Loki can only touch
+its S3 bucket; Tempo can only touch its own; Alloy can only read the bearer
+token secret; Grafana can only read its admin password. Prometheus has no AWS
+permissions at all — it doesn't need any.
 
-The ALB is not declared in Terraform. It is created by the AWS Load Balancer
-Controller, a pod running in the cluster that watches Ingress objects and
-provisions load balancers to match. This is the standard way ingress works on
-EKS: pods reschedule continuously, so only an in-cluster controller can keep
-target registrations current. It does mean the controller owns AWS resources that
-Terraform never sees, which is what drives the two-stack layout below.
+**EBS disk (50Gi)** = Prometheus stores 15 days of time-series metrics on a disk
+that must survive pod restarts. Without it, every restart wipes all metrics
+history. This is provisioned as a Kubernetes PVC backed by an AWS EBS volume.
+
+**VPC** = a private network that isolates everything. Public subnets hold only
+the ALB — the single door from the internet. Private subnets hold everything
+else — the worker nodes, all pods, and the NAT Gateway. Nothing in the private
+subnets can be reached directly from the internet.
+
+**NAT Gateway** = the exit door for the private subnets. Pods have no public IPs
+but still need to pull container images (from Docker Hub / ECR) and call AWS
+APIs (S3, Secrets Manager). The NAT Gateway lets them make outbound connections
+without exposing them to inbound traffic.
+
+**Node group (2 × t3.medium)** = the EC2 instances where Kubernetes schedules
+your pods. Five observability services share two machines, each with 2 vCPU and
+4 GiB of RAM.
+
+**WAF** = blocks requests that shouldn't reach the stack. Enforces the bearer
+token on telemetry ingest paths (`/v1/*`), blocks payloads over 1 MB, and
+applies rate limiting. Grafana's own paths (`/`) are unaffected — it has its
+own login.
+
+**ALB** = the single entry point. Created automatically by the AWS Load Balancer
+Controller (a pod running inside the cluster that watches Kubernetes Ingress
+objects), not by Terraform directly. Routes `/v1/*` to Alloy and everything else
+to Grafana.
 
 ## Stack layout
 
