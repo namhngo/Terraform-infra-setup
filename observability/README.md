@@ -21,8 +21,8 @@ flowchart LR
     Client --> WAF --> ALB
 
     subgraph VPC["VPC · private network · 10.0.0.0/16"]
-        subgraph private["private subnets (no internet access)"]
-            NAT["NAT Gateway\npods reach AWS APIs + pull images"]:::net
+        subgraph private["private subnets (no inbound from internet)"]
+            NAT["NAT Gateway\nchart images · ECR-Public · ECR API auth"]:::net
 
             subgraph EKS["EKS · monitoring namespace"]
                 direction LR
@@ -42,13 +42,15 @@ flowchart LR
     ALB -- "telemetry /v1/*" --> Alloy
     ALB -- "dashboards /*" --> Graf
 
-    subgraph store["Durable Storage (outside the cluster)"]
-        S3L[("S3\nLoki writes logs here\n90-day retention")]:::storage
-        S3T[("S3\nTempo writes traces here\n30-day retention")]:::storage
-        SM[("Secrets Manager\nbearer token\n+ grafana password")]:::storage
-        PVC[("EBS disk · 50Gi\nPrometheus stores metrics here\nsurvives pod restarts")]:::storage
+    subgraph store["Storage + Registry (private AWS network)"]
+        ECR[("ECR\nprivate images\nAlloy · Prom · Grafana")]:::storage
+        S3L[("S3\nLoki logs · 90d")]:::storage
+        S3T[("S3\nTempo traces · 30d")]:::storage
+        SM[("Secrets Manager\ntoken · grafana pw")]:::storage
+        PVC[("EBS disk · 50Gi\nPrometheus metrics")]:::storage
     end
 
+    Nodes -. pull images .-> ECR
     Loki -.-> S3L
     Tempo -.-> S3T
     Alloy -.-> SM
@@ -87,15 +89,32 @@ so it gets a virtual hard drive (EBS) mounted into its pod. The S3-compatible
 alternative is Grafana Mimir, but it's multiple services and overkill for a
 single-node stack.
 
+**ECR (private image registry)** = the three images this stack builds directly
+(Alloy, Prometheus, Grafana) are mirrored into your own private ECR repos rather
+than pulled from Docker Hub at runtime. This is the company pattern: no Docker
+Hub rate limits, CVE scanning on push, and images that live in your account. The
+worker nodes pull from ECR; the layer download rides the free S3 gateway
+endpoint, and only the ECR API auth call goes out via NAT. Mirror them once with
+`make push-images`. (Loki and Tempo are installed by Helm charts that manage
+their own images and still pull upstream.)
+
+**NAT Gateway** = the exit door for the private subnets. Even with ECR, a few
+things still need outbound internet: the ECR API auth handshake, the Helm charts'
+upstream images (Loki, Tempo, and the Loki chart's sidecar), and the AWS Load
+Balancer Controller image, which lives on **ECR Public** — a registry no VPC
+endpoint can reach. Removing the NAT entirely means mirroring all of those too
+and adding interface endpoints for ECR-API/STS/EC2, which costs *more* than the
+NAT — a security/air-gap choice, not a cost saving. So the NAT stays.
+
+**S3 gateway endpoint** = a free VPC endpoint that keeps all S3 traffic on AWS's
+private network instead of routing it through the NAT. Two things ride it:
+Loki/Tempo reading and writing their buckets, and the image layers ECR serves
+from S3. It also trims NAT data-processing charges.
+
 **VPC** = a private network that isolates everything. Public subnets hold only
 the ALB — the single door from the internet. Private subnets hold everything
 else — the worker nodes, all pods, and the NAT Gateway. Nothing in the private
 subnets can be reached directly from the internet.
-
-**NAT Gateway** = the exit door for the private subnets. Pods have no public IPs
-but still need to pull container images (from Docker Hub / ECR) and call AWS
-APIs (S3, Secrets Manager). The NAT Gateway lets them make outbound connections
-without exposing them to inbound traffic.
 
 **Node group (2 × t3.medium)** = the EC2 instances where Kubernetes schedules
 your pods. Five observability services share two machines, each with 2 vCPU and
@@ -117,7 +136,7 @@ The infrastructure is split into two Terraform stacks with separate state.
 
 | Stack | Owns | Providers |
 |---|---|---|
-| `platform/` | VPC, EKS, IAM, S3 data buckets, Secrets Manager, WAF, ACM | `aws` |
+| `platform/` | VPC, EKS, IAM, S3 data buckets, ECR repos, S3 gateway endpoint, Secrets Manager, WAF, ACM | `aws` |
 | `workloads/` | Namespace, ConfigMaps, Deployments, Services, PVC, Ingress, LB Controller | `kubernetes`, `helm`, `aws` |
 
 Both keep state locally. This stack is a monitoring environment that gets stood up
@@ -155,8 +174,10 @@ have to remember.
 | Resource | Purpose |
 |---|---|
 | **VPC** | Public + private subnets across 2 AZs. NAT gateway for private egress. |
+| **S3 gateway endpoint** | Free. Keeps S3 + ECR-layer traffic on AWS's private network. |
 | **EKS Cluster** | Kubernetes control plane. |
 | **EKS Node Group** | 2× t3.medium EC2 instances in private subnets. |
+| **ECR ×3** | Private image registry for Alloy, Prometheus, Grafana (populated by `make push-images`) |
 | **S3: `obs-project-loki`** | Loki log chunk storage (90-day lifecycle) |
 | **S3: `obs-project-tempo`** | Tempo trace block storage (30-day lifecycle) |
 | **Secrets Manager ×2** | Bearer token for ingest auth + Grafana admin password |
@@ -227,6 +248,8 @@ observability/
 │   ├── eks.tf               # VPC + EKS cluster + managed node group
 │   ├── iam.tf               # IRSA roles
 │   ├── s3.tf                # Loki + Tempo buckets, lifecycle, encryption
+│   ├── ecr.tf               # Private image repos (alloy, prometheus, grafana)
+│   ├── vpc-endpoints.tf     # Free S3 gateway endpoint
 │   ├── secrets.tf           # Generated bearer token + Grafana password
 │   ├── waf.tf               # WAF ACL incl. bearer token enforcement
 │   ├── acm.tf               # Optional TLS certificate
@@ -254,6 +277,7 @@ observability/
 | AWS CLI | v2 | `aws --version` |
 | kubectl | >= 1.30 | `kubectl version --client` |
 | Helm | >= 3.0 | `helm version` |
+| Docker | any recent | `docker version` (for `make push-images`) |
 
 Terraform 1.9 is required because `route53_zone_id`'s validation block references
 another variable, which older versions reject.
@@ -263,17 +287,24 @@ Manager, WAF, ACM and Route53. Full admin on a personal account is fine.
 
 ## Deploying
 
-From this directory (`observability/`):
+From this directory (`observability/`). Docker must be running (for
+`push-images`).
 
 ```bash
 make init
 
-# Apply platform (~25 min, mostly EKS), then workloads (~5 min)
+# First-time build — the ECR repos must be populated before the pods that
+# pull from them start, so run the three steps in order:
+make apply-platform   # ~25 min, mostly EKS; also creates the ECR repos
+make push-images      # mirror Alloy/Prometheus/Grafana images into ECR
+make apply-workloads  # ~5 min; pods pull from ECR
+
+# Subsequent runs (images already in ECR) can use the combined target:
 make apply
 ```
 
-`make apply` runs the stacks in the right order and prints the endpoint and the
-commands for retrieving credentials when it finishes.
+`make apply-workloads` (and `make apply`) print the endpoint and the commands
+for retrieving credentials when they finish.
 
 ### Recommended settings
 
@@ -429,11 +460,19 @@ aws secretsmanager delete-secret --secret-id /obs-project/grafana-admin-password
 | ALB | ~$18.00 |
 | WAF Web ACL | ~$6.00 |
 | S3 (minimal data) | < $1.00 |
+| ECR (3 mirrored images, ~1 GB) | < $1.00 |
+| S3 gateway endpoint | $0.00 (free) |
 | Secrets Manager (2 secrets) | $1.00 |
 | **Total** | **~$190/month** |
 
 > Reduce cost: set `node_desired_size = 1`, keep `single_nat_gateway = true`.
 > Run `make destroy` between sessions to avoid idle costs.
+>
+> Removing the NAT gateway does *not* save money here: it would require VPC
+> interface endpoints for ECR-API, STS and EC2 (~$58/mo across 2 AZs, more than
+> the NAT) plus mirroring the ECR-Public LB-controller image. That's a
+> security/air-gap posture, not a cost optimization — see the NAT and ECR notes
+> under [How to read this diagram](#how-to-read-this-diagram).
 
 ## Known gaps
 
