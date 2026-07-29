@@ -1,3 +1,15 @@
+# Image tags for the three ECR-hosted images. These are the source of truth:
+# the `make push-images` target mirrors exactly these tags from Docker Hub into
+# ECR, and the Deployments below reference them via the platform stack's
+# ecr_repository_urls output. Bump a tag here and in the Makefile together.
+locals {
+  image_tags = {
+    alloy      = "v1.17.0"
+    prometheus = "v3.12.0"
+    grafana    = "13.0.2"
+  }
+}
+
 # gp3 StorageClass — EKS doesn't provide one by default post-1.23
 # (in-tree gp2 provisioner is deprecated; EBS CSI driver requires an
 # explicit StorageClass). The EBS CSI driver addon itself is a cluster addon in
@@ -61,7 +73,7 @@ resource "kubernetes_deployment" "alloy" {
 
         container {
           name  = "alloy"
-          image = "grafana/alloy:v1.17.0"
+          image = "${local.platform.ecr_repository_urls["alloy"]}:${local.image_tags.alloy}"
           args  = ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
 
           port {
@@ -159,7 +171,7 @@ resource "kubernetes_deployment" "prometheus" {
 
         container {
           name  = "prometheus"
-          image = "prom/prometheus:v3.12.0"
+          image = "${local.platform.ecr_repository_urls["prometheus"]}:${local.image_tags.prometheus}"
           args = [
             "--config.file=/etc/prometheus/prometheus.yml",
             "--web.enable-remote-write-receiver",
@@ -262,7 +274,7 @@ resource "kubernetes_deployment" "grafana" {
 
         container {
           name  = "grafana"
-          image = "grafana/grafana:13.0.2"
+          image = "${local.platform.ecr_repository_urls["grafana"]}:${local.image_tags.grafana}"
 
           port {
             container_port = 3000
