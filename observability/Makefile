@@ -93,18 +93,19 @@ apply-workloads:
 # an Apple-Silicon (arm64) laptop without it would push arm64 images the nodes
 # can't run. Tags are IMMUTABLE, so re-pushing an existing tag errors — that just
 # means it's already mirrored.
+#
+# Uses skopeo instead of docker for reliable cross-platform copies (docker on
+# macOS sometimes ignores --platform and pushes the wrong arch).
 push-images:
 	@ACCOUNT=$$(aws sts get-caller-identity --query Account --output text); \
 	REGISTRY=$$ACCOUNT.dkr.ecr.$(AWS_REGION).amazonaws.com; \
 	echo "==> logging in to $$REGISTRY"; \
-	aws ecr get-login-password --region $(AWS_REGION) | docker login --username AWS --password-stdin $$REGISTRY; \
+	aws ecr get-login-password --region $(AWS_REGION) | skopeo login --username AWS --password-stdin $$REGISTRY >/dev/null 2>&1; \
 	for entry in $(MIRROR_IMAGES); do \
 	  comp=$${entry%%=*}; src=$${entry#*=}; tag=$${src##*:}; \
-	  dest=$$REGISTRY/$(PROJECT)-$$comp:$$tag; \
-	  echo "==> $$src -> $$dest"; \
-	  docker pull --platform linux/amd64 $$src || exit 1; \
-	  docker tag $$src $$dest; \
-	  docker push $$dest || exit 1; \
+	  dest=docker://$$REGISTRY/$(PROJECT)-$$comp:$$tag; \
+	  echo "==> $$src -> $$dest (linux/amd64)"; \
+	  skopeo copy --override-os linux --override-arch amd64 docker://$$src $$dest || exit 1; \
 	done
 
 # Reverse order. Destroying workloads first lets the load balancer controller

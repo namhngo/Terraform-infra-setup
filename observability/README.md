@@ -277,7 +277,8 @@ observability/
 | AWS CLI | v2 | `aws --version` |
 | kubectl | >= 1.30 | `kubectl version --client` |
 | Helm | >= 3.0 | `helm version` |
-| Docker | any recent | `docker version` (for `make push-images`) |
+| skopeo | any recent | `skopeo --version` (for `make push-images`) |
+| Docker | any recent | `docker version` (needed on macOS, skopeo delegates some operations to it) |
 
 Terraform 1.9 is required because `route53_zone_id`'s validation block references
 another variable, which older versions reject.

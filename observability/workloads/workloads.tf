@@ -72,9 +72,10 @@ resource "kubernetes_deployment" "alloy" {
         service_account_name = kubernetes_service_account.alloy.metadata[0].name
 
         container {
-          name  = "alloy"
-          image = "${local.platform.ecr_repository_urls["alloy"]}:${local.image_tags.alloy}"
-          args  = ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
+          name              = "alloy"
+          image             = "${local.platform.ecr_repository_urls["alloy"]}:${local.image_tags.alloy}"
+          image_pull_policy = "Always"
+          args              = ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
 
           port {
             container_port = 4318
@@ -170,8 +171,9 @@ resource "kubernetes_deployment" "prometheus" {
         }
 
         container {
-          name  = "prometheus"
-          image = "${local.platform.ecr_repository_urls["prometheus"]}:${local.image_tags.prometheus}"
+          name              = "prometheus"
+          image             = "${local.platform.ecr_repository_urls["prometheus"]}:${local.image_tags.prometheus}"
+          image_pull_policy = "Always"
           args = [
             "--config.file=/etc/prometheus/prometheus.yml",
             "--web.enable-remote-write-receiver",
@@ -273,8 +275,9 @@ resource "kubernetes_deployment" "grafana" {
         service_account_name = kubernetes_service_account.grafana.metadata[0].name
 
         container {
-          name  = "grafana"
-          image = "${local.platform.ecr_repository_urls["grafana"]}:${local.image_tags.grafana}"
+          name              = "grafana"
+          image             = "${local.platform.ecr_repository_urls["grafana"]}:${local.image_tags.grafana}"
+          image_pull_policy = "Always"
 
           port {
             container_port = 3000
