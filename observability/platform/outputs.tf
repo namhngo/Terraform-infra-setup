@@ -69,6 +69,13 @@ output "tempo_retention_hours" {
   value       = var.tempo_retention_days * 24
 }
 
+# --- Container images ---
+
+output "ecr_repository_urls" {
+  description = "ECR repository URLs keyed by component name (alloy, prometheus, grafana)"
+  value       = { for k, r in aws_ecr_repository.images : k => r.repository_url }
+}
+
 # --- IAM roles for IRSA service account annotations ---
 
 output "iam_role_arns" {
