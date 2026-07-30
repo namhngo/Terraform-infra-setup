@@ -132,10 +132,11 @@ one pass, with no stack-splitting or ordering workarounds required.
 | **VPC** | Public + private subnets across 2 AZs. NAT gateway for private egress. |
 | **S3 gateway endpoint** | Free. Keeps S3 traffic (Loki/Tempo writes, ECR image layers) off the NAT. |
 | **ECS Cluster** | Fargate, no EC2 instances to manage. |
-| **ECR × 5** | Custom images for Alloy, Loki, Tempo, Prometheus, Grafana — config baked in at build time |
+| **ECR × 5** | Custom images for Alloy, Loki, Tempo, Prometheus, Grafana — config baked in at build time. MUTABLE tags (deliberately, unlike observability-eks — see [Known gaps](#known-gaps)) |
 | **S3 buckets × 2** | Loki log chunks (90-day lifecycle), Tempo trace blocks (30-day lifecycle) |
 | **Secrets Manager × 2** | Bearer token for ingest auth, Grafana admin password |
-| **IAM roles** | 1 shared ECS task execution role + per-service task roles (Alloy→Secrets, Loki→S3, Tempo→S3, Grafana→Secrets; Prometheus needs none) |
+| **IAM roles** | 1 shared ECS task execution role + per-service task roles (Loki→S3, Tempo→S3, Grafana→Secrets). Alloy and Prometheus get none — Alloy never reads the bearer token at runtime (WAF checks it directly from a Terraform-known value), Prometheus needs no AWS API access at all |
+| **Cloud Map namespace** | Backs ECS Service Connect — how `loki:3100`, `tempo:4317`, `prometheus:9090`, `alloy:12345` resolve between containers, the ECS equivalent of Kubernetes' built-in cluster DNS |
 | **Security groups × 7** | Public ALB, internal ALB, and one per service, each scoped to exactly what talks to it |
 | **Public ALB** | TLS termination (if `domain_name` set), WAF, path-based routing (`/v1/*` → Alloy, `/*` → Grafana) |
 | **Internal ALB** | VPC-only, SG-restricted, no WAF/TLS — the backend service's ingest path |
@@ -159,12 +160,17 @@ equivalent in ECS — this is the direct trade-off for not running Kubernetes.
 | File | Owned by | Purpose |
 |---|---|---|
 | `configs/alloy/config.alloy` | Alloy | OTLP receiver → routes logs/traces/metrics to Loki/Tempo/Prometheus |
-| `configs/loki/loki.yml` | Loki | S3 backend, retention, schema config |
-| `configs/tempo/tempo.yml` | Tempo | S3 backend, retention, span metrics generator |
+| `configs/loki/loki.yml.tpl` | Loki | S3 backend, retention, schema config — rendered by `configs.tf` (real bucket name/region baked in) before Docker ever builds |
+| `configs/tempo/tempo.yml.tpl` | Tempo | S3 backend, retention, span metrics generator — rendered the same way |
 | `configs/prometheus/prometheus.yml` | Prometheus | Scrape config, remote write receiver |
 | `configs/grafana/datasources.yml` | Grafana | Loki + Tempo + Prometheus datasources, cross-linked |
 | `configs/grafana/dashboards.yml` | Grafana | Dashboard auto-provisioning config |
 | `configs/grafana/overview-dashboard.json` | Grafana | A sample dashboard to get started |
+
+Inter-service hostnames (`loki`, `tempo`, `prometheus`, `alloy`) resolve via
+**ECS Service Connect** — a Cloud Map namespace plus a sidecar proxy Terraform
+attaches to each service (`ecs.tf`). It's the direct ECS substitute for what
+Kubernetes gives you for free via cluster DNS.
 
 ## Data Flow
 
@@ -195,15 +201,17 @@ observability-ecs/
 ├── variables.tf
 ├── outputs.tf
 ├── vpc.tf                   # VPC, subnets, NAT, S3 gateway endpoint
-├── ecr.tf                   # 5 private image repos
+├── ecr.tf                   # 5 private image repos (MUTABLE tags)
 ├── s3.tf                    # Loki + Tempo buckets
 ├── secrets.tf               # Generated bearer token + Grafana password
+├── configs.tf                # Renders Loki/Tempo config templates with real bucket names
 ├── iam.tf                   # ECS execution role + per-service task roles
 ├── security-groups.tf       # Public ALB, internal ALB, and one per service
+├── acm.tf                   # Optional TLS cert + Route53 alias for the public ALB
 ├── alb-public.tf            # Public ALB, target groups, listener rules
 ├── alb-internal.tf          # Internal ALB, shares the Alloy target group
 ├── waf.tf                   # WAF ACL (bearer-token rule + managed rules)
-├── ecs.tf                   # Cluster, 5 task definitions, 5 services
+├── ecs.tf                   # Cluster, Service Connect namespace, 5 task defs, 5 services
 ├── docker/                  # One Dockerfile per service, config baked in
 │   ├── alloy/Dockerfile
 │   ├── loki/Dockerfile
@@ -224,7 +232,7 @@ observability-ecs/
 |---|---|---|
 | Terraform | >= 1.9 | `terraform --version` |
 | AWS CLI | v2 | `aws --version` |
-| Docker | any recent | `docker version` (for `make build-images`) |
+| Docker | with buildx (bundled in recent Docker Desktop/Engine) | `docker buildx version` (for `make build-images`) |
 
 Your AWS credentials need permissions for: VPC, ECS, ECR, EC2, S3, IAM,
 Secrets Manager, WAF, ELB, ACM (if using a domain), CloudWatch Logs. Full
@@ -241,12 +249,13 @@ Each step builds on the previous one. Commit after each step.
 | **3** | `s3.tf` | Loki + Tempo buckets |
 | **4** | `secrets.tf` | Bearer token + Grafana password |
 | **5** | `ecr.tf` | 5 image repos |
-| **6** | `configs/` + `docker/` | Config files + Dockerfiles for all 5 services |
+| **6** | `configs/`, `docker/`, `configs.tf` | Config files, Dockerfiles, and Loki/Tempo template rendering |
 | **7** | `iam.tf` | Execution role + per-service task roles |
 | **8** | `security-groups.tf` | 7 security groups |
-| **9** | `waf.tf` + `alb-public.tf` | Public ALB, WAF, target groups |
+| **9** | `waf.tf`, `acm.tf`, `alb-public.tf` | Public ALB, optional TLS, WAF, target groups |
 | **10** | `alb-internal.tf` | Internal ALB, sharing the Alloy target group |
-| **11** | `ecs.tf` | Cluster, task definitions, services |
+| **11** | `ecs.tf` | Cluster, Service Connect namespace, task definitions, services |
+| **12** | `Makefile` | `build-images`, `redeploy`, and the rest of the workflow |
 
 ## Deploying
 
@@ -364,13 +373,24 @@ optimizing for before picking an orchestrator.
   a matching update. There's no automatic discovery of "what counts as the
   backend" the way an EKS-based approach might get from cluster-native
   service discovery.
+- **MUTABLE ECR tags, on purpose, with a trade-off.** Unlike
+  `observability-eks`'s IMMUTABLE repos, a tag here can be silently
+  overwritten by anyone who can push — necessary so editing a config file
+  and rebuilding under the same version tag doesn't get rejected, but it
+  means "the image behind `v1.17.0`" isn't a fixed, auditable thing over
+  time the way it is on the EKS side.
+- **ECS Service Connect is new surface area.** It's the direct substitute
+  for Kubernetes' built-in cluster DNS, but it's an ECS-specific concept
+  with its own configuration shape (`service{}` / `client_alias{}` blocks in
+  `ecs.tf`) — there's no equivalent to point at if you already know
+  Kubernetes DNS and are translating by analogy.
 
 ## What's Customizable
 
 - **Sampling** — adjust trace sampling rate in `configs/alloy/config.alloy`
 - **Retention** — `loki_retention_days` / `tempo_retention_days`
 - **Task sizing** — CPU/memory per service in `ecs.tf`
-- **Internal ingress allowlist** — `internal_allowed_cidr_blocks` in `variables.tf`
+- **Internal ingress allowlist** — `internal_ingress_cidr_blocks` in `variables.tf`
 - **Dashboards / Alerts** — add to `configs/grafana/`
 - **Domain / TLS** — set `domain_name` + `route53_zone_id` for HTTPS on the public ALB
 

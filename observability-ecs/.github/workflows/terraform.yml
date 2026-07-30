@@ -1,0 +1,46 @@
+# CI for the observability-ecs project. Lives inside the project so it
+# travels with it when this folder is split into its own repository — at
+# which point this path becomes the repo-root .github/workflows and GitHub
+# runs it automatically. While nested in the parent monorepo it does not run
+# (GitHub only executes workflows from the repository root); the checks stay
+# runnable locally via `make validate` / `make lint`.
+#
+# Single root module here (unlike observability-eks's 2-stack matrix), so
+# there's just one job to validate, no matrix needed.
+
+name: terraform
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.9.8"
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: fmt
+        run: terraform fmt -check -recursive
+
+      - name: init (no backend)
+        run: terraform init -backend=false -input=false
+
+      - name: validate
+        run: terraform validate
+
+      - uses: terraform-linters/setup-tflint@v4
+
+      - name: tflint
+        run: tflint
