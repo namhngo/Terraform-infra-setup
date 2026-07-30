@@ -14,3 +14,13 @@ output "private_subnet_ids" {
   description = "Private subnet IDs (Fargate tasks)"
   value       = module.vpc.private_subnets
 }
+
+output "loki_bucket" {
+  description = "S3 bucket for Loki chunks"
+  value       = aws_s3_bucket.loki.id
+}
+
+output "tempo_bucket" {
+  description = "S3 bucket for Tempo blocks"
+  value       = aws_s3_bucket.tempo.id
+}

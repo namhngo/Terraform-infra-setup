@@ -41,3 +41,17 @@ variable "single_nat_gateway" {
   type        = bool
   default     = true
 }
+
+# --- Retention ---
+
+variable "loki_retention_days" {
+  description = "Days to retain Loki log chunks in S3 before expiration"
+  type        = number
+  default     = 90
+}
+
+variable "tempo_retention_days" {
+  description = "Days to retain Tempo trace blocks in S3 before expiration"
+  type        = number
+  default     = 30
+}
