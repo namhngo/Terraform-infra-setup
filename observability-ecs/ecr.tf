@@ -3,12 +3,20 @@
 # custom builds), ECS Fargate has no ConfigMap equivalent — every service's
 # config file has to be baked into its image, so all 5 are custom-built here.
 # See docker/ for the Dockerfiles and `make build-images` in the Makefile.
+#
+# MUTABLE tags, deliberately different from observability-eks's IMMUTABLE
+# choice: those 3 repos held exact, unchanged mirrors of upstream images —
+# a tag only needed to move when the upstream version did. Here, every
+# image bakes in a config file from configs/ that you'll likely edit and
+# rebuild under the *same* version tag while iterating (e.g. tweaking
+# config.alloy without bumping v1.17.0). IMMUTABLE tags would reject that
+# re-push outright.
 
 resource "aws_ecr_repository" "images" {
   for_each = toset(["alloy", "loki", "tempo", "prometheus", "grafana"])
 
   name                 = "${var.project_name}-${each.key}"
-  image_tag_mutability = "IMMUTABLE" # a tag (e.g. v1.17.0) always resolves to the same image
+  image_tag_mutability = "MUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
