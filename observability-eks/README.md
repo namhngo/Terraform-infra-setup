@@ -239,7 +239,7 @@ This project is self-contained — nothing here refers to a parent directory, so
 can be moved into its own repository as-is.
 
 ```
-observability/
+observability-eks/
 ├── README.md                # ← you are here
 ├── Makefile                 # Ordered apply/destroy across the stacks below
 ├── .github/workflows/       # fmt + validate + tflint (runs once this is its own repo)

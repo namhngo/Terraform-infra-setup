@@ -8,6 +8,7 @@ repository without changes.
 | Project | Description |
 |---|---|
 | [`notifications/`](./notifications) | SQS + Lambda + SES async notification system |
-| [`observability/`](./observability) | Grafana LGTM stack on EKS |
+| [`observability-eks/`](./observability-eks) | Grafana LGTM stack on EKS (learning project — full Kubernetes) |
+| [`observability-ecs/`](./observability-ecs) | Grafana LGTM stack on ECS Fargate (no Kubernetes — dual-ALB ingress pattern) |
 
 Start from the README inside whichever project you're working on.
