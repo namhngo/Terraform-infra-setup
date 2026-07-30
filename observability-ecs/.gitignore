@@ -1,0 +1,5 @@
+# Rendered by configs.tf (local_file) at `terraform apply` time — contains
+# the actual S3 bucket name, not a secret, but generated/environment-specific
+# and shouldn't be committed. Re-generated on every apply.
+docker/loki/loki.yml
+docker/tempo/tempo.yml

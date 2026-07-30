@@ -1,0 +1,54 @@
+// Generic OTLP collector. Accepts logs, traces, and metrics from any
+// OTLP-compatible client (SDK, telemetrygen, curl) and routes them to the
+// appropriate backend. Hostnames below (loki, tempo, prometheus) resolve via
+// ECS Service Connect — see ecs.tf.
+
+otelcol.receiver.otlp "default" {
+  http {
+    endpoint = "0.0.0.0:4318"
+
+    cors {
+      allowed_origins = ["*"]
+      allowed_headers = ["traceparent", "tracestate", "content-type", "authorization"]
+      max_age         = 300
+    }
+  }
+
+  output {
+    logs    = [otelcol.exporter.loki.default.input]
+    traces  = [otelcol.exporter.otlp.tempo.input]
+    metrics = [otelcol.exporter.prometheus.default.input]
+  }
+}
+
+// --- Logs → Loki ---
+otelcol.exporter.loki "default" {
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+// --- Traces → Tempo ---
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+    tls {
+      insecure = true // internal VPC network
+    }
+  }
+}
+
+// --- Metrics → Prometheus ---
+otelcol.exporter.prometheus "default" {
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
