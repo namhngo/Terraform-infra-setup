@@ -39,3 +39,13 @@ output "ecr_repository_urls" {
   description = "ECR repository URLs keyed by service name"
   value       = { for k, r in aws_ecr_repository.images : k => r.repository_url }
 }
+
+output "ecs_task_execution_role_arn" {
+  description = "Shared ECS task execution role ARN (ECR pull, CloudWatch Logs)"
+  value       = aws_iam_role.ecs_task_execution.arn
+}
+
+output "task_role_arns" {
+  description = "Per-service ECS task role ARNs (app-level AWS permissions)"
+  value       = { for k, r in aws_iam_role.task : k => r.arn }
+}
