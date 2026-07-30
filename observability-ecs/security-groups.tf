@@ -83,6 +83,14 @@ resource "aws_security_group" "alloy" {
     security_groups = [aws_security_group.alb_internal.id]
   }
 
+  ingress {
+    description     = "ALB health checks (/-/ready on the admin port, not the OTLP traffic port)"
+    from_port       = 12345
+    to_port         = 12345
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb_public.id, aws_security_group.alb_internal.id]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0

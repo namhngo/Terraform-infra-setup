@@ -70,3 +70,33 @@ variable "internal_ingress_cidr_blocks" {
   type        = list(string)
   default     = []
 }
+
+# --- TLS (public ALB only — the internal ALB is always plain HTTP) ---
+
+variable "domain_name" {
+  description = <<-EOT
+    Route53-hosted domain used to issue an ACM certificate, enabling HTTPS on
+    the public ALB. Leave empty to serve plaintext HTTP, in which case the
+    Grafana admin password and all telemetry cross the internet unencrypted —
+    acceptable only for a short-lived throwaway environment.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "subdomain" {
+  description = "Hostname prefix within domain_name for the public endpoint"
+  type        = string
+  default     = "observability"
+}
+
+variable "route53_zone_id" {
+  description = "Route53 hosted zone ID for domain_name; required when domain_name is set"
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.domain_name == "" || var.route53_zone_id != ""
+    error_message = "route53_zone_id must be set when domain_name is set, so the ACM certificate can be DNS-validated."
+  }
+}

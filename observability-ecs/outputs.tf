@@ -62,3 +62,13 @@ output "security_group_ids" {
     grafana      = aws_security_group.grafana.id
   }
 }
+
+output "public_endpoint" {
+  description = "Public ALB endpoint (Grafana at /, telemetry ingest at /v1/*)"
+  value       = local.enable_tls ? "https://${local.fqdn}" : "http://${aws_lb.public.dns_name}"
+}
+
+output "public_alb_dns_name" {
+  description = "Public ALB's raw DNS name (always available, regardless of domain_name)"
+  value       = aws_lb.public.dns_name
+}
