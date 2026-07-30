@@ -34,3 +34,8 @@ output "grafana_admin_password_secret_arn" {
   description = "Secrets Manager ARN for the Grafana admin password"
   value       = aws_secretsmanager_secret.grafana_admin_password.arn
 }
+
+output "ecr_repository_urls" {
+  description = "ECR repository URLs keyed by service name"
+  value       = { for k, r in aws_ecr_repository.images : k => r.repository_url }
+}
