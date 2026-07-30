@@ -72,3 +72,13 @@ output "public_alb_dns_name" {
   description = "Public ALB's raw DNS name (always available, regardless of domain_name)"
   value       = aws_lb.public.dns_name
 }
+
+output "internal_alb_dns_name" {
+  description = <<-EOT
+    Internal ALB's DNS name — hand this to your backend service as its OTLP
+    endpoint. Only resolves from inside the VPC (or a peered/connected
+    network within internal_ingress_cidr_blocks); it has no public DNS
+    record and can't be reached or resolved from the internet.
+  EOT
+  value       = aws_lb.internal.dns_name
+}
