@@ -89,12 +89,19 @@ resource "aws_ecs_service" "alloy" {
     container_port   = 4318
   }
 
+  load_balancer {
+    target_group_arn = aws_lb_target_group.alloy_internal.arn
+    container_name   = "alloy"
+    container_port   = 4318
+  }
+
   service_connect_configuration {
     enabled   = true
     namespace = aws_service_discovery_http_namespace.this.arn
 
     service {
-      port_name = "admin"
+      port_name      = "admin"
+      discovery_name = "alloy"
       client_alias {
         port     = 12345
         dns_name = "alloy"
@@ -103,6 +110,17 @@ resource "aws_ecs_service" "alloy" {
   }
 
   depends_on = [aws_lb_listener.public_http, aws_lb_listener.public_https]
+
+  # Alloy goes first so its Cloud Map service registration completes before
+  # the other 4 services try to register theirs. Without this gate, the
+  # services that Terraform creates in parallel (loki, tempo, prometheus,
+  # grafana) race each other for the same Cloud Map namespace and AWS
+  # returns "SC service is already used by <namespace>" on whichever ones
+  # lost the race. Found live — the error pattern was consistent across
+  # multiple apply attempts: alloy always succeeded, then some of the
+  # remaining 4 failed with that exact error. All of them depending on
+  # alloy as a gate is the minimal fix — one well-defined constraint, not
+  # an N! chain.
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -151,13 +169,15 @@ resource "aws_ecs_service" "loki" {
     namespace = aws_service_discovery_http_namespace.this.arn
 
     service {
-      port_name = "http"
+      port_name      = "http"
+      discovery_name = "loki"
       client_alias {
         port     = 3100
         dns_name = "loki"
       }
     }
   }
+  depends_on = [aws_ecs_service.alloy]
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -206,8 +226,16 @@ resource "aws_ecs_service" "tempo" {
     enabled   = true
     namespace = aws_service_discovery_http_namespace.this.arn
 
+    # Two service{} blocks, same dns_name ("tempo" resolves on both ports),
+    # but discovery_name MUST be explicit and unique. It defaults to
+    # client_alias.dns_name, so leaving it unset here made both blocks try
+    # to claim the same Cloud Map service name in one API call — the real
+    # cause of "SC service is already used by <namespace>", found live.
+    # (Not a race with other services: this collided with itself, in
+    # isolation, regardless of what else was or wasn't running.)
     service {
-      port_name = "otlp-grpc"
+      port_name      = "otlp-grpc"
+      discovery_name = "tempo-grpc"
       client_alias {
         port     = 4317
         dns_name = "tempo"
@@ -215,13 +243,16 @@ resource "aws_ecs_service" "tempo" {
     }
 
     service {
-      port_name = "http"
+      port_name      = "http"
+      discovery_name = "tempo-http"
       client_alias {
         port     = 3200
         dns_name = "tempo"
       }
     }
   }
+
+  depends_on = [aws_ecs_service.alloy]
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -271,13 +302,16 @@ resource "aws_ecs_service" "prometheus" {
     namespace = aws_service_discovery_http_namespace.this.arn
 
     service {
-      port_name = "http"
+      port_name      = "http"
+      discovery_name = "prometheus"
       client_alias {
         port     = 9090
         dns_name = "prometheus"
       }
     }
   }
+
+  depends_on = [aws_ecs_service.alloy]
 }
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -347,5 +381,5 @@ resource "aws_ecs_service" "grafana" {
     namespace = aws_service_discovery_http_namespace.this.arn
   }
 
-  depends_on = [aws_lb_listener.public_http, aws_lb_listener.public_https]
+  depends_on = [aws_lb_listener.public_http, aws_lb_listener.public_https, aws_ecs_service.alloy]
 }

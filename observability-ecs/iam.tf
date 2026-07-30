@@ -53,6 +53,29 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+# The execution role also needs to read the Grafana admin password secret, since
+# the ECS agent (not the Grafana container) fetches secrets referenced in the
+# task definition's "secrets" block and injects them as environment variables.
+# Without this, the task itself can't start — the agent fails to pull the
+# secret before the container ever begins.
+resource "aws_iam_policy" "ecs_execution_secrets" {
+  name = "${var.project_name}-ecs-execution-secrets"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = [aws_secretsmanager_secret.grafana_admin_password.arn]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_execution_secrets" {
+  role       = aws_iam_role.ecs_task_execution.name
+  policy_arn = aws_iam_policy.ecs_execution_secrets.arn
+}
+
 # --- Per-service task roles (app-level AWS permissions) ---
 
 resource "aws_iam_role" "task" {
