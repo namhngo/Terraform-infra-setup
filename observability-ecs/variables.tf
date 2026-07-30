@@ -55,3 +55,18 @@ variable "tempo_retention_days" {
   type        = number
   default     = 30
 }
+
+# --- Internal ingress ---
+
+variable "internal_ingress_cidr_blocks" {
+  description = <<-EOT
+    CIDR blocks allowed to reach the internal ALB (the backend service's
+    ingest path). Defaults to empty — the internal ALB is completely
+    unreachable until you set this to your actual backend network's CIDR
+    (a peered VPC's range, a specific subnet, etc.). There is deliberately
+    no default that "just works", since this is the entire trust boundary
+    for that path — see the README's Security notes.
+  EOT
+  type        = list(string)
+  default     = []
+}

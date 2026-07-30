@@ -49,3 +49,16 @@ output "task_role_arns" {
   description = "Per-service ECS task role ARNs (app-level AWS permissions)"
   value       = { for k, r in aws_iam_role.task : k => r.arn }
 }
+
+output "security_group_ids" {
+  description = "Security group IDs keyed by name"
+  value = {
+    alb_public   = aws_security_group.alb_public.id
+    alb_internal = aws_security_group.alb_internal.id
+    alloy        = aws_security_group.alloy.id
+    loki         = aws_security_group.loki.id
+    tempo        = aws_security_group.tempo.id
+    prometheus   = aws_security_group.prometheus.id
+    grafana      = aws_security_group.grafana.id
+  }
+}
