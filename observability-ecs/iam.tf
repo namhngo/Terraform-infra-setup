@@ -8,13 +8,12 @@
 # being assigned its own role in ecs.tf.
 
 locals {
-  # One entry per service that needs AWS permissions. Prometheus isn't here —
-  # it has no task role at all, since it needs no AWS API access.
+  # One entry per service that needs AWS permissions at runtime. Alloy isn't
+  # here: the bearer token WAF checks against (waf.tf) is embedded directly
+  # from random_password.alloy_bearer_token.result at the Terraform level —
+  # Alloy itself is never asked to read that secret, so it gets no task role
+  # at all, same as Prometheus.
   task_roles = {
-    alloy = {
-      actions   = ["secretsmanager:GetSecretValue"]
-      resources = [aws_secretsmanager_secret.alloy_bearer_token.arn]
-    }
     loki = {
       actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject", "s3:ListBucket"]
       resources = [aws_s3_bucket.loki.arn, "${aws_s3_bucket.loki.arn}/*"]
