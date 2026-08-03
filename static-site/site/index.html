@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="A static site delivered from private S3 through CloudFront">
+    <title>Static Site Infrastructure</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #10131a;
+        color: #eef2f7;
+      }
+
+      body {
+        display: grid;
+        min-height: 100vh;
+        margin: 0;
+        place-items: center;
+        background: radial-gradient(circle at top right, #24385a 0, #10131a 48%);
+      }
+
+      main {
+        width: min(42rem, calc(100% - 3rem));
+        padding: 3rem 0;
+      }
+
+      .eyebrow {
+        color: #8db7ff;
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        max-width: 11ch;
+        margin: 0.7rem 0 1rem;
+        font-size: clamp(2.8rem, 10vw, 5.5rem);
+        line-height: 0.94;
+        letter-spacing: -0.06em;
+      }
+
+      p {
+        max-width: 34rem;
+        color: #b9c4d3;
+        font-size: 1.1rem;
+        line-height: 1.7;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.6rem;
+        margin-top: 1.5rem;
+        padding: 0.7rem 0.9rem;
+        border: 1px solid #335d48;
+        border-radius: 999px;
+        background: #17271f;
+        color: #9de4b8;
+        font-size: 0.9rem;
+      }
+
+      .status::before {
+        width: 0.55rem;
+        height: 0.55rem;
+        border-radius: 50%;
+        background: #5fe58d;
+        box-shadow: 0 0 0 0.25rem #5fe58d22;
+        content: "";
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="eyebrow">S3 + CloudFront</div>
+      <h1>Private origin. Public edge.</h1>
+      <p>
+        This page is served through CloudFront from a private, versioned S3
+        bucket. Origin Access Control signs the request, while the edge handles
+        HTTPS, compression, caching, and SPA fallback.
+      </p>
+      <div class="status">Infrastructure smoke test page</div>
+    </main>
+  </body>
+</html>
