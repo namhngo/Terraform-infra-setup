@@ -117,6 +117,9 @@ resource "aws_cloudfront_distribution" "site" {
   comment             = "${var.project_name} static site"
   default_root_object = "index.html"
   price_class         = var.cloudfront_price_class
+  aliases             = local.custom_domain_enabled ? [var.domain_name] : []
+
+  depends_on = [aws_acm_certificate_validation.site]
 
   origin {
     domain_name              = aws_s3_bucket.site.bucket_regional_domain_name
@@ -166,6 +169,9 @@ resource "aws_cloudfront_distribution" "site" {
   }
 
   viewer_certificate {
-    cloudfront_default_certificate = true
+    acm_certificate_arn            = local.custom_domain_enabled ? aws_acm_certificate.site[0].arn : null
+    cloudfront_default_certificate = !local.custom_domain_enabled
+    minimum_protocol_version       = local.custom_domain_enabled ? "TLSv1.2_2021" : null
+    ssl_support_method             = local.custom_domain_enabled ? "sni-only" : null
   }
 }

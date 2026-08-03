@@ -35,5 +35,5 @@ output "cloudfront_domain_name" {
 
 output "site_url" {
   description = "HTTPS URL for the deployed site."
-  value       = "https://${aws_cloudfront_distribution.site.domain_name}"
+  value       = "https://${local.custom_domain_enabled ? var.domain_name : aws_cloudfront_distribution.site.domain_name}"
 }

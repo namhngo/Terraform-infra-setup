@@ -40,6 +40,8 @@ locals {
   custom_domain_enabled  = var.domain_name != null && trimspace(var.domain_name) != ""
   dns_records_enabled    = local.custom_domain_enabled && var.create_dns_records
   configured_bucket_name = var.bucket_name == null ? "" : trimspace(var.bucket_name)
+  normalized_domain_name = trim(var.domain_name == null ? "" : var.domain_name, ".")
+  normalized_zone_name   = trim(var.route53_zone_name == null ? "" : var.route53_zone_name, ".")
 }
 
 resource "terraform_data" "configuration" {
@@ -64,6 +66,14 @@ resource "terraform_data" "configuration" {
     precondition {
       condition     = !local.custom_domain_enabled || var.create_dns_records
       error_message = "domain_name requires create_dns_records = true so ACM validation can complete automatically."
+    }
+
+    precondition {
+      condition = !var.create_dns_records || endswith(
+        "${lower(local.normalized_domain_name)}.",
+        "${lower(local.normalized_zone_name)}."
+      )
+      error_message = "domain_name must be equal to or below route53_zone_name."
     }
   }
 }
