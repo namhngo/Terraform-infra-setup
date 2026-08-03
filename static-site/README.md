@@ -125,8 +125,8 @@ each step.
 |---|---|---|
 | **1** | `README.md` | Architecture, security model, lifecycle, and implementation plan |
 | **2** | `main.tf`, `variables.tf`, `outputs.tf` | Provider configuration and project inputs |
-| **3** | `s3.tf` | Private bucket, encryption, versioning, ownership, and access policy |
-| **4** | `cloudfront.tf` | OAC, distribution, SPA fallback, cache policies, and security headers |
+| **3** | `s3.tf` | Private bucket, encryption, versioning, ownership, and public-access block |
+| **4** | `cloudfront.tf` | OAC, distribution, bucket policy, SPA fallback, cache policies, and security headers |
 | **5** | `acm.tf`, `route53.tf` | Optional custom-domain certificate and alias records |
 | **6** | `Makefile`, `site/index.html` | Content deployment, invalidation, and a smoke-test page |
 | **7** | `.github/workflows/terraform.yml` | Project-local fmt, validate, and tflint checks |
