@@ -1,0 +1,20 @@
+# Leave bucket_name null to let AWS assign a globally unique name using the
+# project name as a prefix.
+project_name = "static-site"
+bucket_name  = null
+
+aws_region  = "us-east-1"
+environment = "learning"
+
+# Keep the default domainless deployment for the first apply. CloudFront's
+# generated hostname is available from `terraform output site_url`.
+domain_name        = null
+route53_zone_name  = null
+create_dns_records = false
+
+cloudfront_price_class = "PriceClass_100"
+force_destroy          = false
+
+tags = {
+  Owner = "personal"
+}
