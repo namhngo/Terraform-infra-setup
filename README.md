@@ -10,5 +10,6 @@ repository without changes.
 | [`notifications/`](./notifications) | SQS + Lambda + SES async notification system |
 | [`observability-eks/`](./observability-eks) | Grafana LGTM stack on EKS (learning project — full Kubernetes) |
 | [`observability-ecs/`](./observability-ecs) | Grafana LGTM stack on ECS Fargate (no Kubernetes — dual-ALB ingress pattern) |
+| [`static-site/`](./static-site) | Private S3 origin behind CloudFront (optional ACM + Route 53) |
 
 Start from the README inside whichever project you're working on.
